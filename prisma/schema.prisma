@@ -1,0 +1,500 @@
+// Hotel CRM chassis — Phase 0
+// Tenant boundary remains Property. GuestProfile → Contact.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Cross-cutting
+// ─────────────────────────────────────────────
+
+model IdempotencyKey {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  requestHash  String
+  statusCode   Int?
+  responseBody Json?
+  status       String   @default("in_progress") // in_progress | completed
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  @@map("idempotency_keys")
+}
+
+// ─────────────────────────────────────────────
+// Auth & RBAC
+// ─────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  propertyRoles UserPropertyRole[]
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+
+  permissions     RolePermission[]
+  userAssignments UserPropertyRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id   String @id @default(uuid())
+  code String @unique
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserPropertyRole {
+  id         String @id @default(uuid())
+  userId     String
+  propertyId String
+  roleId     String
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  role     Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, propertyId, roleId])
+  @@map("user_property_roles")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────────
+// Tenant boundary (hotel = Property)
+// ─────────────────────────────────────────────
+
+model Property {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  timezone  String   @default("UTC")
+  currency  String   @default("USD")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userRoles       UserPropertyRole[]
+  contacts        Contact[]
+  companies       Company[]
+  pipelineStages  PipelineStage[]
+  deals           Deal[]
+  activities      Activity[]
+  segments        Segment[]
+  campaigns       Campaign[]
+  auditLogs       AuditLog[]
+  notifications   Notification[]
+  retentionPolicy RetentionPolicy?
+
+  @@map("properties")
+}
+
+// ─────────────────────────────────────────────
+// Companies (corporate / agency / event accounts)
+// ─────────────────────────────────────────────
+
+enum CompanyType {
+  corporate
+  travel_agency
+  event_planner
+  other
+}
+
+model Company {
+  id         String      @id @default(uuid())
+  propertyId String
+  name       String
+  type       CompanyType @default(other)
+  email      String?
+  phone      String?
+  website    String?
+  address    String?
+  notes      String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  property Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+  deals    Deal[]
+
+  @@index([propertyId, name])
+  @@map("companies")
+}
+
+// ─────────────────────────────────────────────
+// Contacts (was GuestProfile)
+// ─────────────────────────────────────────────
+
+enum ContactStatus {
+  lead
+  customer
+  inactive
+}
+
+model Contact {
+  id           String        @id @default(uuid())
+  propertyId   String
+  companyId    String?
+  fullName     String
+  email        String?
+  phone        String?
+  nationality  String?
+  notes        String?
+  source       String? // walk_in | website | referral | rfp | other
+  status       ContactStatus @default(lead)
+  tags         String[]      @default([])
+  preferences  Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  property   Property          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  company    Company?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  documents  ContactDocument[]
+  deals      Deal[]
+  activities Activity[]
+  campaignRecipients CampaignRecipient[]
+
+  @@index([propertyId, fullName])
+  @@index([propertyId, status])
+  @@index([companyId])
+  @@map("contacts")
+}
+
+model ContactDocument {
+  id           String   @id @default(uuid())
+  contactId    String
+  documentType String // passport | national_id | drivers_license
+  documentNo   String
+  storageUrl   String?
+  createdAt    DateTime @default(now())
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@map("contact_documents")
+}
+
+// ─────────────────────────────────────────────
+// Pipeline & Deals (Phase 2)
+// ─────────────────────────────────────────────
+
+model PipelineStage {
+  id         String  @id @default(uuid())
+  propertyId String
+  name       String
+  position   Int // sort order within the property's pipeline
+  isWon      Boolean @default(false)
+  isLost     Boolean @default(false)
+  isDefault  Boolean @default(false) // entry stage for new deals
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  deals    Deal[]
+
+  @@unique([propertyId, name])
+  @@index([propertyId, position])
+  @@map("pipeline_stages")
+}
+
+model Deal {
+  id               String    @id @default(uuid())
+  propertyId       String
+  stageId          String
+  contactId        String?
+  companyId        String?
+  title            String
+  value            Decimal?  @db.Decimal(12, 2)
+  currency         String    @default("USD")
+  expectedCloseDate DateTime? @db.Date
+  source           String?
+  notes            String?
+  closedAt         DateTime?
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  property   Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  stage      PipelineStage @relation(fields: [stageId], references: [id])
+  contact    Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  company    Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  activities Activity[]
+
+  @@index([propertyId, stageId])
+  @@index([propertyId, createdAt])
+  @@index([contactId])
+  @@index([companyId])
+  @@map("deals")
+}
+
+// ─────────────────────────────────────────────
+// Activities & reminders (Phase 3)
+// ─────────────────────────────────────────────
+
+enum ActivityType {
+  call
+  email
+  meeting
+  task
+  note
+}
+
+enum ActivityStatus {
+  open
+  completed
+  cancelled
+}
+
+model Activity {
+  id             String         @id @default(uuid())
+  propertyId     String
+  contactId      String?
+  dealId         String?
+  type           ActivityType
+  status         ActivityStatus @default(open)
+  subject        String
+  body           String?
+  dueAt          DateTime?
+  reminderAt     DateTime?
+  reminderSentAt DateTime?
+  completedAt    DateTime?
+  createdBy      String?
+  assignedTo     String? // userId who should get the reminder
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  contact  Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  deal     Deal?    @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, status])
+  @@index([propertyId, dueAt])
+  @@index([contactId, createdAt])
+  @@index([dealId])
+  @@index([reminderAt, reminderSentAt, status])
+  @@map("activities")
+}
+
+// ─────────────────────────────────────────────
+// Segments & Campaigns (Phase 4)
+// ─────────────────────────────────────────────
+
+model Segment {
+  id          String   @id @default(uuid())
+  propertyId  String
+  name        String
+  description String?
+  // Saved Contact filters, e.g. { status, source, tags, companyId, hasEmail }
+  filters     Json
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  property  Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@unique([propertyId, name])
+  @@index([propertyId])
+  @@map("segments")
+}
+
+enum CampaignStatus {
+  draft
+  sending
+  sent
+  failed
+}
+
+enum CampaignChannel {
+  email
+  sms
+}
+
+enum CampaignRecipientStatus {
+  queued
+  sent
+  skipped
+  failed
+}
+
+model Campaign {
+  id          String          @id @default(uuid())
+  propertyId  String
+  segmentId   String
+  name        String
+  channel     CampaignChannel @default(email)
+  subject     String? // required for email
+  body        String // supports {{fullName}}, {{email}} placeholders
+  status      CampaignStatus  @default(draft)
+  sentAt      DateTime?
+  createdBy   String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // Snapshot counts after send
+  totalRecipients   Int @default(0)
+  sentCount         Int @default(0)
+  skippedCount      Int @default(0)
+  failedCount       Int @default(0)
+
+  property   Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  segment    Segment             @relation(fields: [segmentId], references: [id])
+  recipients CampaignRecipient[]
+
+  @@index([propertyId, status])
+  @@index([segmentId])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id             String                   @id @default(uuid())
+  campaignId     String
+  contactId      String
+  status         CampaignRecipientStatus  @default(queued)
+  recipientEmail String?
+  recipientPhone String?
+  notificationId String?
+  failureReason  String?
+  sentAt         DateTime?
+  createdAt      DateTime                 @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([contactId])
+  @@map("campaign_recipients")
+}
+
+// ─────────────────────────────────────────────
+// Audit
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  propertyId String?
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  property Property? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  user     User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────
+// Outbox
+// ─────────────────────────────────────────────
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payload       Json
+  status        String    @default("pending") // pending | published
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status])
+  @@map("outbox_events")
+}
+
+// ─────────────────────────────────────────────
+// Notifications
+// ─────────────────────────────────────────────
+
+enum NotificationStatus {
+  queued
+  sent
+  failed
+}
+
+model Notification {
+  id             String             @id @default(uuid())
+  propertyId     String
+  eventType      String
+  channel        String             @default("email")
+  recipientEmail String?
+  subject        String?
+  body           String?
+  status         NotificationStatus @default(queued)
+  failureReason  String?
+  payload        Json
+  sentAt         DateTime?
+  createdAt      DateTime           @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────────
+// Data retention
+// ─────────────────────────────────────────────
+
+model RetentionPolicy {
+  id                           String   @id @default(uuid())
+  propertyId                   String   @unique
+  auditLogRetentionDays        Int      @default(2555)
+  contactDocumentRetentionDays Int      @default(2555)
+  updatedBy                    String?
+  updatedAt                    DateTime @updatedAt
+  createdAt                    DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@map("retention_policies")
+}
