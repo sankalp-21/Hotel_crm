@@ -18,6 +18,15 @@ router.post('/refresh', authLimiter, validate(refreshSchema), asyncHandler(contr
 router.post('/logout', asyncHandler(controller.logout));
 router.get('/me', authenticate, asyncHandler(controller.me));
 
+// Roles the caller is allowed to assign at the current property.
+router.get(
+  '/roles',
+  authenticate,
+  resolvePropertyContext,
+  requirePermission(PERMISSIONS.USERS_CREATE),
+  asyncHandler(controller.listRoles)
+);
+
 router.post(
   '/users',
   authenticate,

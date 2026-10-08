@@ -12,6 +12,7 @@ const {
   ConflictError,
   TooManyRequestsError,
 } = require('../../shared/errors/AppError');
+const { assertCanAssignRole, filterAssignableRoles } = require('./roleAssignment');
 const { logAudit } = require('../audit/service');
 const env = require('../../config/env');
 const redis = require('../../infrastructure/redis/redis');
@@ -137,24 +138,62 @@ async function logout({ refreshToken }) {
  * are provisioned by a property manager/admin.)
  */
 async function createUser({ email, password, fullName, propertyId, roleId }, actingUser) {
+  if (!actingUser) throw new UnauthorizedError();
+
+  // Authorization first: the acting user may only grant roles whose permissions
+  // they already hold at this property (and never super_admin unless they are one).
+  const [role, actor] = await Promise.all([
+    authRepository.getRoleWithPermissions(roleId),
+    authRepository.getActorAccess(actingUser.id, propertyId),
+  ]);
+  assertCanAssignRole({ actor, role });
+
   const existing = await authRepository.findByEmail(email);
   if (existing) {
     throw new ConflictError('A user with this email already exists');
   }
 
   const passwordHash = await hashPassword(password);
-  const user = await authRepository.createUser({ email, passwordHash, fullName });
-  await authRepository.assignPropertyRole({ userId: user.id, propertyId, roleId });
+
+  let user;
+  try {
+    user = await authRepository.createUserWithRole({
+      email,
+      passwordHash,
+      fullName,
+      propertyId,
+      roleId,
+    });
+  } catch (err) {
+    // Lost a race with a concurrent create for the same email.
+    if (err.code === 'P2002') throw new ConflictError('A user with this email already exists');
+    throw err;
+  }
 
   await logAudit({
     propertyId,
-    userId: actingUser?.id,
+    userId: actingUser.id,
     action: 'auth.user_created',
     entityType: 'User',
     entityId: user.id,
+    metadata: { roleId: role.id, roleName: role.name },
   });
 
   return { id: user.id, email: user.email, fullName: user.fullName };
 }
 
-module.exports = { login, refresh, logout, createUser };
+/** Roles the acting user may assign at this property (used to populate pickers). */
+async function listAssignableRoles(propertyId, actingUser) {
+  const [roles, actor] = await Promise.all([
+    authRepository.listRolesWithPermissions(),
+    authRepository.getActorAccess(actingUser.id, propertyId),
+  ]);
+  return filterAssignableRoles(actor, roles).map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    permissions: r.permissionCodes,
+  }));
+}
+
+module.exports = { login, refresh, logout, createUser, listAssignableRoles };

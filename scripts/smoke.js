@@ -214,6 +214,57 @@ async function main() {
   r = await call('POST', `/campaigns/${campaignId}/send`, { token: t, headers: { 'Idempotency-Key': `${idemKey}-2` } });
   check('re-send with new key -> 409 (already sent)', r.status === 409, r);
 
+  section('Role escalation (Phase 1.1)');
+  r = await call('GET', '/auth/roles', { token: t });
+  const adminRoles = Object.fromEntries((r.json?.items || []).map((x) => [x.name, x.id]));
+  check(
+    'admin sees all 4 assignable roles',
+    r.status === 200 && ['super_admin', 'property_manager', 'sales_agent', 'auditor'].every((n) => adminRoles[n]),
+    r.json?.items?.map((x) => x.name)
+  );
+
+  const mgrEmail = `mgr-${run}@example.com`;
+  const mgrPassword = `Smoke-${run}-Aa1xyz!`;
+  const userBody = (email, roleId) => ({
+    email,
+    password: mgrPassword,
+    fullName: 'Smoke User',
+    propertyId: PROPERTY_ID,
+    roleId,
+  });
+  const idem = (k) => ({ 'Idempotency-Key': `${k}-${run}` });
+
+  r = await call('POST', '/auth/users', { token: t, headers: idem('mk-mgr'), body: userBody(mgrEmail, adminRoles.property_manager) });
+  check('admin creates a property_manager 201', r.status === 201, r);
+
+  r = await call('POST', '/auth/login', { body: { email: mgrEmail, password: mgrPassword }, property: null });
+  const mt = r.json?.accessToken;
+  check('manager can log in', r.status === 200 && Boolean(mt), r);
+
+  r = await call('GET', '/auth/roles', { token: mt });
+  const mgrRoleNames = (r.json?.items || []).map((x) => x.name);
+  const mgrRoles = Object.fromEntries((r.json?.items || []).map((x) => [x.name, x.id]));
+  check(
+    'manager role picker excludes super_admin, includes sales_agent',
+    r.status === 200 && !mgrRoleNames.includes('super_admin') && mgrRoleNames.includes('sales_agent'),
+    mgrRoleNames
+  );
+
+  r = await call('POST', '/auth/users', { token: mt, headers: idem('esc-1'), body: userBody(`esc-${run}@example.com`, adminRoles.super_admin) });
+  check('ESCALATION BLOCKED: manager creating a super_admin -> 403', r.status === 403, r);
+
+  r = await call('POST', '/auth/users', { token: mt, headers: idem('badrole'), body: userBody(`orphan-${run}@example.com`, '33333333-3333-3333-3333-333333333333') });
+  check('unknown roleId -> 422 (not 500)', r.status === 422, r);
+
+  r = await call('POST', '/auth/users', { token: mt, headers: idem('orphan-retry'), body: userBody(`orphan-${run}@example.com`, mgrRoles.sales_agent) });
+  check('same email works afterwards (no orphan user left behind)', r.status === 201, r);
+
+  r = await call('POST', '/auth/users', { token: mt, headers: idem('agent'), body: userBody(`agent-${run}@example.com`, mgrRoles.sales_agent) });
+  check('manager creating a sales_agent -> 201', r.status === 201, r);
+
+  r = await call('POST', '/properties', { token: mt, body: { name: `Probe ${run}`, currency: 'USD', timezone: 'UTC' }, property: null });
+  check('manager cannot create properties -> 403', r.status === 403, r);
+
   section('Reports / audit / retention');
   r = await call('GET', '/reports/dashboard', { token: t });
   check('dashboard 200', r.status === 200 && r.json?.deals, r);
