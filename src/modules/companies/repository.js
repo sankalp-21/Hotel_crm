@@ -4,9 +4,9 @@ function create(data) {
   return prisma.company.create({ data });
 }
 
-function findById(id) {
-  return prisma.company.findUnique({
-    where: { id },
+function findById(id, propertyId) {
+  return prisma.company.findFirst({
+    where: { id, propertyId },
     include: {
       contacts: {
         select: { id: true, fullName: true, email: true, phone: true, status: true },
@@ -41,8 +41,8 @@ function search({ propertyId, search, type, page, pageSize }) {
   ]);
 }
 
-function update(id, data) {
-  return prisma.company.update({ where: { id }, data });
+function update(id, propertyId, data) {
+  return prisma.company.update({ where: { id, propertyId }, data });
 }
 
 module.exports = { create, findById, search, update };

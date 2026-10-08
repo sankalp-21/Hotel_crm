@@ -9,8 +9,8 @@ function create(data) {
   return prisma.activity.create({ data, include: activityInclude });
 }
 
-function findById(id) {
-  return prisma.activity.findUnique({ where: { id }, include: activityInclude });
+function findById(id, propertyId) {
+  return prisma.activity.findFirst({ where: { id, propertyId }, include: activityInclude });
 }
 
 function search({
@@ -57,8 +57,8 @@ function search({
   ]);
 }
 
-function update(id, data) {
-  return prisma.activity.update({ where: { id }, data, include: activityInclude });
+function update(id, propertyId, data) {
+  return prisma.activity.update({ where: { id, propertyId }, data, include: activityInclude });
 }
 
 /**
@@ -84,9 +84,9 @@ function markReminderSent(id, sentAt = new Date()) {
   });
 }
 
-function listByContact(contactId, { skip = 0, take = 50 } = {}) {
+function listByContact(contactId, propertyId, { skip = 0, take = 50 } = {}) {
   return prisma.activity.findMany({
-    where: { contactId },
+    where: { contactId, propertyId },
     orderBy: { createdAt: 'desc' },
     skip,
     take,

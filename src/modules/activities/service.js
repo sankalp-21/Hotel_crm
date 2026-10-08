@@ -2,7 +2,8 @@ const activitiesRepository = require('./repository');
 const contactsRepository = require('../contacts/repository');
 const dealsRepository = require('../deals/repository');
 const notificationsRepository = require('../notifications/repository');
-const { NotFoundError, ForbiddenError, ValidationError } = require('../../shared/errors/AppError');
+const { NotFoundError, ValidationError } = require('../../shared/errors/AppError');
+const { assertUserHasPropertyAccess } = require('../../shared/tenancy/userAccess');
 const { logAudit } = require('../audit/service');
 const {
   emitActivityCreated,
@@ -12,26 +13,21 @@ const {
 
 async function assertContactInProperty(contactId, propertyId) {
   if (!contactId) return;
-  const contact = await contactsRepository.findById(contactId);
+  const contact = await contactsRepository.findById(contactId, propertyId);
   if (!contact) throw new NotFoundError('Contact');
-  if (contact.propertyId !== propertyId) {
-    throw new ValidationError('Contact does not belong to this property');
-  }
 }
 
 async function assertDealInProperty(dealId, propertyId) {
   if (!dealId) return;
-  const deal = await dealsRepository.findById(dealId);
+  const deal = await dealsRepository.findById(dealId, propertyId);
   if (!deal) throw new NotFoundError('Deal');
-  if (deal.propertyId !== propertyId) {
-    throw new ValidationError('Deal does not belong to this property');
-  }
   return deal;
 }
 
 async function createActivity(data, actingUser) {
   await assertContactInProperty(data.contactId, data.propertyId);
   const deal = await assertDealInProperty(data.dealId, data.propertyId);
+  await assertUserHasPropertyAccess(data.assignedTo, data.propertyId);
 
   // If only a deal is provided, inherit its contact for timeline linkage.
   let contactId = data.contactId ?? null;
@@ -62,11 +58,8 @@ async function createActivity(data, actingUser) {
 }
 
 async function getActivity(id, propertyId) {
-  const activity = await activitiesRepository.findById(id);
+  const activity = await activitiesRepository.findById(id, propertyId);
   if (!activity) throw new NotFoundError('Activity');
-  if (activity.propertyId !== propertyId) {
-    throw new ForbiddenError('Activity does not belong to this property');
-  }
   return activity;
 }
 
@@ -79,6 +72,7 @@ async function updateActivity(id, propertyId, data, actingUser) {
   await getActivity(id, propertyId);
   if (data.contactId !== undefined) await assertContactInProperty(data.contactId, propertyId);
   if (data.dealId !== undefined) await assertDealInProperty(data.dealId, propertyId);
+  await assertUserHasPropertyAccess(data.assignedTo, propertyId);
 
   const patch = { ...data };
   // Changing reminder time re-arms delivery.
@@ -96,7 +90,7 @@ async function updateActivity(id, propertyId, data, actingUser) {
     patch.completedAt = null;
   }
 
-  const activity = await activitiesRepository.update(id, patch);
+  const activity = await activitiesRepository.update(id, propertyId, patch);
   await logAudit({
     propertyId,
     userId: actingUser?.id,
@@ -117,7 +111,7 @@ async function completeActivity(id, propertyId, actingUser) {
   const current = await getActivity(id, propertyId);
   if (current.status === 'completed') return current;
 
-  const activity = await activitiesRepository.update(id, {
+  const activity = await activitiesRepository.update(id, propertyId, {
     status: 'completed',
     completedAt: new Date(),
   });
@@ -159,7 +153,7 @@ async function getContactTimeline(contactId, propertyId, { page = 1, pageSize = 
   await assertContactInProperty(contactId, propertyId);
 
   const [activities, notifications] = await Promise.all([
-    activitiesRepository.listByContact(contactId, { skip: 0, take: 500 }),
+    activitiesRepository.listByContact(contactId, propertyId, { skip: 0, take: 500 }),
     notificationsRepository.listByContact(contactId, propertyId, { skip: 0, take: 500 }),
   ]);
 

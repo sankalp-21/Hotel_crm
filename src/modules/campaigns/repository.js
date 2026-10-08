@@ -8,9 +8,9 @@ function create(data) {
   return prisma.campaign.create({ data, include: campaignInclude });
 }
 
-function findById(id) {
-  return prisma.campaign.findUnique({
-    where: { id },
+function findById(id, propertyId) {
+  return prisma.campaign.findFirst({
+    where: { id, propertyId },
     include: {
       ...campaignInclude,
       recipients: {
@@ -48,8 +48,8 @@ function search({ propertyId, search, status, page, pageSize }) {
   ]);
 }
 
-function update(id, data) {
-  return prisma.campaign.update({ where: { id }, data, include: campaignInclude });
+function update(id, propertyId, data) {
+  return prisma.campaign.update({ where: { id, propertyId }, data, include: campaignInclude });
 }
 
 function createRecipients(rows) {

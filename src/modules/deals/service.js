@@ -2,37 +2,28 @@ const dealsRepository = require('./repository');
 const pipelinesRepository = require('../pipelines/repository');
 const contactsRepository = require('../contacts/repository');
 const companiesRepository = require('../companies/repository');
-const { NotFoundError, ForbiddenError, ValidationError } = require('../../shared/errors/AppError');
+const { NotFoundError, ValidationError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 const { emitDealCreated, emitDealStageChanged } = require('./events');
 
 async function assertContactInProperty(contactId, propertyId) {
   if (!contactId) return;
-  const contact = await contactsRepository.findById(contactId);
+  const contact = await contactsRepository.findById(contactId, propertyId);
   if (!contact) throw new NotFoundError('Contact');
-  if (contact.propertyId !== propertyId) {
-    throw new ValidationError('Contact does not belong to this property');
-  }
 }
 
 async function assertCompanyInProperty(companyId, propertyId) {
   if (!companyId) return;
-  const company = await companiesRepository.findById(companyId);
+  const company = await companiesRepository.findById(companyId, propertyId);
   if (!company) throw new NotFoundError('Company');
-  if (company.propertyId !== propertyId) {
-    throw new ValidationError('Company does not belong to this property');
-  }
 }
 
 async function resolveStage(propertyId, stageId) {
   await pipelinesRepository.ensureDefaults(propertyId);
 
   if (stageId) {
-    const stage = await pipelinesRepository.findById(stageId);
+    const stage = await pipelinesRepository.findById(stageId, propertyId);
     if (!stage) throw new NotFoundError('PipelineStage');
-    if (stage.propertyId !== propertyId) {
-      throw new ValidationError('Stage does not belong to this property');
-    }
     return stage;
   }
 
@@ -73,11 +64,8 @@ async function createDeal(data, actingUser) {
 }
 
 async function getDeal(id, propertyId) {
-  const deal = await dealsRepository.findById(id);
+  const deal = await dealsRepository.findById(id, propertyId);
   if (!deal) throw new NotFoundError('Deal');
-  if (deal.propertyId !== propertyId) {
-    throw new ForbiddenError('Deal does not belong to this property');
-  }
   return deal;
 }
 
@@ -91,7 +79,7 @@ async function updateDeal(id, propertyId, data, actingUser) {
   if (data.contactId !== undefined) await assertContactInProperty(data.contactId, propertyId);
   if (data.companyId !== undefined) await assertCompanyInProperty(data.companyId, propertyId);
 
-  const deal = await dealsRepository.update(id, data);
+  const deal = await dealsRepository.update(id, propertyId, data);
   await logAudit({
     propertyId,
     userId: actingUser?.id,
@@ -109,7 +97,7 @@ async function transitionDeal(id, propertyId, { stageId }, actingUser) {
 
   if (stage.id === current.stageId) return current;
 
-  const deal = await dealsRepository.update(id, {
+  const deal = await dealsRepository.update(id, propertyId, {
     stageId: stage.id,
     closedAt: stage.isWon || stage.isLost ? new Date() : null,
   });

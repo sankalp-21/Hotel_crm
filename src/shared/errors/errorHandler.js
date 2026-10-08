@@ -27,6 +27,13 @@ function errorHandler(err, req, res, next) {
     });
   }
 
+  // Prisma "record to update/delete not found" (e.g. a tenant-scoped write that matched no row).
+  if (err && err.code === 'P2025') {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: 'Resource not found' },
+    });
+  }
+
   // Unexpected error — log full detail, never leak internals to the client.
   logger.error({ err, path: req.path }, 'unexpected_error');
   return res.status(500).json({

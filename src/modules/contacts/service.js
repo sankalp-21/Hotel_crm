@@ -1,15 +1,13 @@
 const contactsRepository = require('./repository');
 const companiesRepository = require('../companies/repository');
-const { NotFoundError, ForbiddenError, ValidationError } = require('../../shared/errors/AppError');
+const { NotFoundError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 
 async function assertCompanyInProperty(companyId, propertyId) {
   if (!companyId) return;
-  const company = await companiesRepository.findById(companyId);
+  // Scoped lookup: a company from another property is indistinguishable from a missing one.
+  const company = await companiesRepository.findById(companyId, propertyId);
   if (!company) throw new NotFoundError('Company');
-  if (company.propertyId !== propertyId) {
-    throw new ValidationError('Company does not belong to this property');
-  }
 }
 
 async function createContact(data, actingUser) {
@@ -27,11 +25,8 @@ async function createContact(data, actingUser) {
 }
 
 async function getContact(id, propertyId) {
-  const contact = await contactsRepository.findById(id);
+  const contact = await contactsRepository.findById(id, propertyId);
   if (!contact) throw new NotFoundError('Contact');
-  if (contact.propertyId !== propertyId) {
-    throw new ForbiddenError('Contact does not belong to this property');
-  }
   return contact;
 }
 
@@ -46,7 +41,7 @@ async function updateContact(id, propertyId, data, actingUser) {
     await assertCompanyInProperty(data.companyId, propertyId);
   }
 
-  const contact = await contactsRepository.update(id, data);
+  const contact = await contactsRepository.update(id, propertyId, data);
   await logAudit({
     propertyId,
     userId: actingUser?.id,

@@ -5,9 +5,14 @@ const prisma = require('./infrastructure/db/prisma');
 const redis = require('./infrastructure/redis/redis');
 const { registerNotificationListeners } = require('./modules/notifications/worker');
 const { startReminderSweep, stopReminderSweep } = require('./modules/activities/reminder.worker');
+const {
+  startIdempotencyCleanup,
+  stopIdempotencyCleanup,
+} = require('./shared/middleware/idempotency');
 
 registerNotificationListeners();
 startReminderSweep({ intervalMs: 15_000 });
+startIdempotencyCleanup();
 
 const app = createApp();
 
@@ -22,6 +27,7 @@ async function shutdown(signal, exitCode = 0) {
   shuttingDown = true;
   logger.info(`${signal} received, shutting down gracefully`);
   stopReminderSweep();
+  stopIdempotencyCleanup();
   server.close(async () => {
     try {
       await prisma.$disconnect();

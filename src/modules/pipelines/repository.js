@@ -8,8 +8,8 @@ function listByProperty(propertyId) {
   });
 }
 
-function findById(id) {
-  return prisma.pipelineStage.findUnique({ where: { id } });
+function findById(id, propertyId) {
+  return prisma.pipelineStage.findFirst({ where: { id, propertyId } });
 }
 
 function findDefault(propertyId) {
@@ -23,8 +23,8 @@ function create(data) {
   return prisma.pipelineStage.create({ data });
 }
 
-function update(id, data) {
-  return prisma.pipelineStage.update({ where: { id }, data });
+function update(id, propertyId, data) {
+  return prisma.pipelineStage.update({ where: { id, propertyId }, data });
 }
 
 /**

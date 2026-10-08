@@ -2,7 +2,7 @@ const campaignsRepository = require('./repository');
 const segmentsRepository = require('../segments/repository');
 const notificationsRepository = require('../notifications/repository');
 const channel = require('../notifications/channel');
-const { NotFoundError, ForbiddenError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
+const { NotFoundError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 const { emitCampaignSent } = require('./events');
 const logger = require('../../config/logger');
@@ -15,11 +15,8 @@ function renderTemplate(template, contact) {
 }
 
 async function assertSegmentInProperty(segmentId, propertyId) {
-  const segment = await segmentsRepository.findById(segmentId);
+  const segment = await segmentsRepository.findById(segmentId, propertyId);
   if (!segment) throw new NotFoundError('Segment');
-  if (segment.propertyId !== propertyId) {
-    throw new ValidationError('Segment does not belong to this property');
-  }
   return segment;
 }
 
@@ -44,11 +41,8 @@ async function createCampaign(data, actingUser) {
 }
 
 async function getCampaign(id, propertyId) {
-  const campaign = await campaignsRepository.findById(id);
+  const campaign = await campaignsRepository.findById(id, propertyId);
   if (!campaign) throw new NotFoundError('Campaign');
-  if (campaign.propertyId !== propertyId) {
-    throw new ForbiddenError('Campaign does not belong to this property');
-  }
   return campaign;
 }
 
@@ -64,7 +58,7 @@ async function updateCampaign(id, propertyId, data, actingUser) {
   }
   if (data.segmentId) await assertSegmentInProperty(data.segmentId, propertyId);
 
-  const campaign = await campaignsRepository.update(id, data);
+  const campaign = await campaignsRepository.update(id, propertyId, data);
   await logAudit({
     propertyId,
     userId: actingUser?.id,
@@ -96,7 +90,7 @@ async function sendCampaign(id, propertyId, actingUser) {
     take: 5000,
   });
 
-  await campaignsRepository.update(id, {
+  await campaignsRepository.update(id, propertyId, {
     status: 'sending',
     totalRecipients: contacts.length,
   });
@@ -178,7 +172,7 @@ async function sendCampaign(id, propertyId, actingUser) {
   }
 
   const finalStatus = failedCount > 0 && sentCount === 0 ? 'failed' : 'sent';
-  const updated = await campaignsRepository.update(id, {
+  const updated = await campaignsRepository.update(id, propertyId, {
     status: finalStatus,
     sentAt: new Date(),
     sentCount,

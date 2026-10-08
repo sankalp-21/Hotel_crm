@@ -48,7 +48,7 @@ async function call(method, path, { body, token, headers = {}, property = PROPER
   } catch {
     json = { raw: text };
   }
-  return { status: res.status, json };
+  return { status: res.status, json, headers: Object.fromEntries(res.headers.entries()) };
 }
 
 const section = (t) => console.log(`\n== ${t}`);
@@ -236,6 +236,7 @@ async function main() {
 
   r = await call('POST', '/auth/users', { token: t, headers: idem('mk-mgr'), body: userBody(mgrEmail, adminRoles.property_manager) });
   check('admin creates a property_manager 201', r.status === 201, r);
+  const mgrAId = r.json?.id;
 
   r = await call('POST', '/auth/login', { body: { email: mgrEmail, password: mgrPassword }, property: null });
   const mt = r.json?.accessToken;
@@ -264,6 +265,143 @@ async function main() {
 
   r = await call('POST', '/properties', { token: mt, body: { name: `Probe ${run}`, currency: 'USD', timezone: 'UTC' }, property: null });
   check('manager cannot create properties -> 403', r.status === 403, r);
+
+  section('Tenant isolation (Phase 1.3)');
+  r = await call('POST', '/properties', { token: t, property: null, body: { name: `Isolation Hotel ${run}`, currency: 'USD', timezone: 'UTC' } });
+  check('admin creates a second property (tenant B) 201', r.status === 201, r);
+  const propB = r.json?.id;
+
+  r = await call('GET', '/properties', { token: t, property: null });
+  check('creator can see the new property (gets a role there)', r.status === 200 && r.json?.items?.some((p) => p.id === propB), r.json);
+
+  r = await call('GET', '/auth/roles', { token: t, property: propB });
+  const rolesB = Object.fromEntries((r.json?.items || []).map((x) => [x.name, x.id]));
+  check('creator can administer tenant B (lists roles there)', r.status === 200 && Boolean(rolesB.property_manager), r);
+
+  const mgrBEmail = `mgrb-${run}@example.com`;
+  r = await call('POST', '/auth/users', { token: t, property: propB, headers: idem('mk-mgr-b'), body: { email: mgrBEmail, password: mgrPassword, fullName: 'Tenant B Manager', propertyId: propB, roleId: rolesB.property_manager } });
+  check('create a manager who belongs ONLY to tenant B', r.status === 201, r);
+  const mgrBId = r.json?.id;
+
+  r = await call('POST', '/auth/login', { body: { email: mgrBEmail, password: mgrPassword }, property: null });
+  const tb = r.json?.accessToken;
+  check('tenant B manager logs in', r.status === 200 && Boolean(tb), r);
+
+  const asB = (method, path, body, headers) => call(method, path, { token: tb, property: propB, body, headers });
+
+  // --- reads of tenant A's records from tenant B must look like "does not exist"
+  const crossReads = [
+    ['contact', `/contacts/${contactId}`],
+    ['company', `/companies/${companyId}`],
+    ['deal', `/deals/${dealId}`],
+    ['activity', `/activities/${activityId}`],
+    ['segment', `/segments/${segmentId}`],
+    ['segment preview', `/segments/${segmentId}/preview`],
+    ['campaign', `/campaigns/${campaignId}`],
+    ['contact timeline', `/contacts/${contactId}/timeline`],
+  ];
+  for (const [label, path] of crossReads) {
+    r = await asB('GET', path);
+    check(`B reading A's ${label} -> 404 (was 403)`, r.status === 404, r);
+  }
+
+  // --- writes against tenant A's records from tenant B must fail and change nothing
+  const crossWrites = [
+    ['PATCH contact', 'PATCH', `/contacts/${contactId}`, { fullName: 'Hijacked' }],
+    ['PATCH company', 'PATCH', `/companies/${companyId}`, { name: 'Hijacked' }],
+    ['PATCH deal', 'PATCH', `/deals/${dealId}`, { title: 'Hijacked' }],
+    ['PATCH activity', 'PATCH', `/activities/${activityId}`, { subject: 'Hijacked' }],
+    ['PATCH segment', 'PATCH', `/segments/${segmentId}`, { name: 'Hijacked' }],
+    ['PATCH campaign', 'PATCH', `/campaigns/${campaignId}`, { name: 'Hijacked' }],
+    ['PATCH pipeline stage', 'PATCH', `/pipeline/stages/${byName('Qualified')?.id}`, { name: 'Hijacked' }],
+    ['transition deal', 'POST', `/deals/${dealId}/transition`, { stageId: byName('Lost')?.id }],
+    ['complete activity', 'POST', `/activities/${activityId}/complete`, undefined],
+  ];
+  for (const [label, method, path, body] of crossWrites) {
+    r = await asB(method, path, body);
+    check(`B attempting to ${label} owned by A -> 404`, r.status === 404, r);
+  }
+  r = await asB('POST', `/campaigns/${campaignId}/send`, undefined, idem('x-send'));
+  check("B sending A's campaign -> 404", r.status === 404, r);
+
+  r = await call('GET', `/contacts/${contactId}`, { token: t });
+  check("A's contact unchanged after B's attempts", r.status === 200 && r.json?.fullName === `Smoke Tester ${run}`, r.json?.fullName);
+  r = await call('GET', `/deals/${dealId}`, { token: t });
+  check("A's deal unchanged after B's attempts", r.status === 200 && r.json?.title === `Wedding block ${run}`, r.json?.title);
+  r = await call('GET', `/pipeline/stages`, { token: t });
+  check("A's pipeline stage names unchanged", (r.json?.items || []).every((st) => st.name !== 'Hijacked'), r.json?.items?.map((x) => x.name));
+
+  // --- B cannot link tenant A's records into its own
+  r = await asB('POST', '/contacts', { propertyId: propB, fullName: `B Contact ${run}`, email: `b-${run}@example.com`, tags: [tag] });
+  check('B creates its own contact 201', r.status === 201, r);
+  const contactB = r.json?.id;
+
+  r = await asB('POST', '/contacts', { propertyId: propB, fullName: 'Linker', companyId });
+  check("B linking A's company to a contact -> 404", r.status === 404, r);
+  r = await asB('POST', '/deals', { propertyId: propB, title: 'x', contactId });
+  check("B creating a deal with A's contact -> 404", r.status === 404, r);
+  r = await asB('POST', '/deals', { propertyId: propB, title: 'x', contactId: contactB, stageId: byName('Qualified')?.id });
+  check("B creating a deal in A's pipeline stage -> 404", r.status === 404, r);
+  r = await asB('POST', '/campaigns', { propertyId: propB, segmentId, name: 'x', channel: 'email', subject: 's', body: 'b' });
+  check("B creating a campaign on A's segment -> 404", r.status === 404, r);
+  r = await asB('POST', '/activities', { propertyId: propB, type: 'task', subject: 'x', dealId });
+  check("B creating an activity on A's deal -> 404", r.status === 404, r);
+
+  // --- assignee must belong to the same tenant (1.3 core fix)
+  r = await asB('POST', '/activities', { propertyId: propB, type: 'task', subject: 'x', contactId: contactB, assignedTo: mgrAId });
+  check("ASSIGNEE CHECK: B assigning a tenant-A user -> 422", r.status === 422, r);
+  r = await asB('POST', '/activities', { propertyId: propB, type: 'task', subject: 'x', contactId: contactB, assignedTo: '44444444-4444-4444-4444-444444444444' });
+  check('ASSIGNEE CHECK: unknown user id gives the same 422 (no existence oracle)', r.status === 422, r);
+  r = await asB('POST', '/activities', { propertyId: propB, type: 'task', subject: 'own', contactId: contactB, assignedTo: mgrBId });
+  check('B assigning its own user -> 201', r.status === 201, r);
+  const activityB = r.json?.id;
+  r = await asB('PATCH', `/activities/${activityB}`, { assignedTo: mgrAId });
+  check("ASSIGNEE CHECK: re-assigning to a tenant-A user via PATCH -> 422", r.status === 422, r);
+
+  // --- listing and header scoping
+  r = await asB('GET', '/contacts');
+  check("B's contact list excludes tenant A data", r.status === 200 && !r.json?.items?.some((c) => c.id === contactId) && r.json?.total === 1, r.json?.total);
+  r = await call('GET', '/contacts', { token: tb, property: PROPERTY_ID });
+  check('B user sending tenant A as property context -> 403', r.status === 403, r);
+
+  section('Idempotency (Phase 1.4)');
+  const withKey = (k) => ({ 'Idempotency-Key': k });
+
+  // An immediate retry must replay the stored response. Before 1.4 this raced and returned 409.
+  for (let i = 0; i < 3; i += 1) {
+    const k = `imm-${i}-${run}`;
+    const body = userBody(`idem-${i}-${run}@example.com`, adminRoles.sales_agent);
+    const first = await call('POST', '/auth/users', { token: t, headers: withKey(k), body });
+    const retry = await call('POST', '/auth/users', { token: t, headers: withKey(k), body });
+    check(
+      `immediate retry #${i + 1} replays the stored 201 (no 409)`,
+      first.status === 201 && retry.status === 201 && retry.json?.id === first.json?.id && retry.headers['idempotent-replayed'] === 'true',
+      { first: first.status, retry: retry.status, replayed: retry.headers['idempotent-replayed'] }
+    );
+  }
+
+  const keyDiff = `diff-${run}`;
+  r = await call('POST', '/auth/users', { token: t, headers: withKey(keyDiff), body: userBody(`idem-d1-${run}@example.com`, adminRoles.sales_agent) });
+  check('first use of a key succeeds', r.status === 201, r);
+  r = await call('POST', '/auth/users', { token: t, headers: withKey(keyDiff), body: userBody(`idem-d2-${run}@example.com`, adminRoles.sales_agent) });
+  check('same key with a different body -> 409', r.status === 409 && /different request/.test(r.json?.error?.message || ''), r);
+
+  // Keys are private to the caller: another user/tenant using the same key string is unaffected.
+  const keyShared = `shared-${run}`;
+  const aShared = await call('POST', '/auth/users', { token: t, headers: withKey(keyShared), body: userBody(`shared-a-${run}@example.com`, adminRoles.sales_agent) });
+  const bSharedBody = { email: `shared-b-${run}@example.com`, password: mgrPassword, fullName: 'Smoke User', propertyId: propB, roleId: rolesB.sales_agent };
+  const bShared = await asB('POST', '/auth/users', bSharedBody, withKey(keyShared));
+  check(
+    'same key string from another user/tenant executes independently (201, no cross-tenant 409)',
+    aShared.status === 201 && bShared.status === 201 && aShared.json?.id !== bShared.json?.id,
+    { a: aShared.status, b: bShared.status, bBody: bShared.json }
+  );
+  const bReplay = await asB('POST', '/auth/users', bSharedBody, withKey(keyShared));
+  check(
+    "tenant B's replay returns B's own response, never A's",
+    bReplay.status === 201 && bReplay.json?.id === bShared.json?.id && bReplay.headers['idempotent-replayed'] === 'true',
+    bReplay
+  );
 
   section('Reports / audit / retention');
   r = await call('GET', '/reports/dashboard', { token: t });

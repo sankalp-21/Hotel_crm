@@ -1,5 +1,5 @@
 const segmentsRepository = require('./repository');
-const { NotFoundError, ForbiddenError, ConflictError } = require('../../shared/errors/AppError');
+const { NotFoundError, ConflictError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 
 async function createSegment(data, actingUser) {
@@ -24,11 +24,8 @@ async function createSegment(data, actingUser) {
 }
 
 async function getSegment(id, propertyId) {
-  const segment = await segmentsRepository.findById(id);
+  const segment = await segmentsRepository.findById(id, propertyId);
   if (!segment) throw new NotFoundError('Segment');
-  if (segment.propertyId !== propertyId) {
-    throw new ForbiddenError('Segment does not belong to this property');
-  }
   return segment;
 }
 
@@ -40,7 +37,7 @@ async function searchSegments(query) {
 async function updateSegment(id, propertyId, data, actingUser) {
   await getSegment(id, propertyId);
   try {
-    const segment = await segmentsRepository.update(id, data);
+    const segment = await segmentsRepository.update(id, propertyId, data);
     await logAudit({
       propertyId,
       userId: actingUser?.id,

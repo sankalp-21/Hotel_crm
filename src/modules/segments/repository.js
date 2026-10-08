@@ -5,8 +5,8 @@ function create(data) {
   return prisma.segment.create({ data });
 }
 
-function findById(id) {
-  return prisma.segment.findUnique({ where: { id } });
+function findById(id, propertyId) {
+  return prisma.segment.findFirst({ where: { id, propertyId } });
 }
 
 function search({ propertyId, search, page, pageSize }) {
@@ -32,8 +32,8 @@ function search({ propertyId, search, page, pageSize }) {
   ]);
 }
 
-function update(id, data) {
-  return prisma.segment.update({ where: { id }, data });
+function update(id, propertyId, data) {
+  return prisma.segment.update({ where: { id, propertyId }, data });
 }
 
 function resolveContacts(propertyId, filters, { skip = 0, take = 1000 } = {}) {

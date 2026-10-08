@@ -47,7 +47,15 @@ async function resolveActivityReminderDue({ activityId, assignedTo, createdBy })
   if (!recipientUserId) return null;
 
   const user = await prisma.user.findUnique({ where: { id: recipientUserId } });
-  if (!user?.email) return null;
+  if (!user?.email || !user.isActive) return null;
+
+  // Defence in depth: never email an activity's details to someone who has no
+  // access to the activity's property, whatever the row says.
+  const access = await prisma.userPropertyRole.findFirst({
+    where: { userId: user.id, propertyId: activity.propertyId },
+    select: { id: true },
+  });
+  if (!access) return null;
 
   return {
     propertyId: activity.propertyId,
