@@ -12,6 +12,10 @@ function createUser({ email, passwordHash, fullName }) {
   return prisma.user.create({ data: { email, passwordHash, fullName } });
 }
 
+function updatePasswordHash(userId, passwordHash) {
+  return prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+}
+
 function assignPropertyRole({ userId, propertyId, roleId }) {
   return prisma.userPropertyRole.create({ data: { userId, propertyId, roleId } });
 }
@@ -99,6 +103,7 @@ module.exports = {
   findById,
   createUser,
   assignPropertyRole,
+  updatePasswordHash,
   createUserWithRole,
   getRoleWithPermissions,
   listRolesWithPermissions,

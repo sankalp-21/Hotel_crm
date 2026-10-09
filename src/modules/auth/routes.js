@@ -1,6 +1,6 @@
 const express = require('express');
 const controller = require('./controller');
-const { loginSchema, refreshSchema, createUserSchema } = require('./validator');
+const { loginSchema, refreshSchema, createUserSchema, changePasswordSchema } = require('./validator');
 const { validate } = require('../../shared/validation/validate');
 const { authenticate } = require('../../shared/middleware/authenticate');
 const { resolvePropertyContext } = require('../../shared/middleware/resolvePropertyContext');
@@ -17,6 +17,13 @@ router.post('/login', authLimiter, validate(loginSchema), asyncHandler(controlle
 router.post('/refresh', authLimiter, validate(refreshSchema), asyncHandler(controller.refresh));
 router.post('/logout', asyncHandler(controller.logout));
 router.get('/me', authenticate, asyncHandler(controller.me));
+router.post(
+  '/change-password',
+  authenticate,
+  authLimiter,
+  validate(changePasswordSchema),
+  asyncHandler(controller.changePassword)
+);
 
 // Roles the caller is allowed to assign at the current property.
 router.get(

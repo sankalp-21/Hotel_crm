@@ -20,6 +20,11 @@ async function createUser(req, res) {
   res.status(201).json(user);
 }
 
+async function changePassword(req, res) {
+  await authService.changePassword(req.user, req.body);
+  res.status(204).send();
+}
+
 async function listRoles(req, res) {
   const items = await authService.listAssignableRoles(req.propertyId, req.user);
   res.json({ items });
@@ -29,4 +34,4 @@ async function me(req, res) {
   res.json({ user: req.user });
 }
 
-module.exports = { login, refresh, logout, createUser, listRoles, me };
+module.exports = { login, refresh, logout, createUser, changePassword, listRoles, me };

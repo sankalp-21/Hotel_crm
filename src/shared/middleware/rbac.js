@@ -41,29 +41,19 @@ function requirePermission(permissionCode) {
   };
 }
 
-/** Platform-level gate: user must hold super_admin on at least one property. */
-function requireSuperAdmin() {
-  return async (req, res, next) => {
-    try {
-      if (!req.user) return next(new UnauthorizedError());
-
-      const assignment = await prisma.userPropertyRole.findFirst({
-        where: {
-          userId: req.user.id,
-          role: { name: 'super_admin' },
-        },
-        select: { id: true },
-      });
-
-      if (!assignment) {
-        return next(new ForbiddenError('Super admin role required'));
-      }
-
-      next();
-    } catch (err) {
-      next(err);
+/**
+ * Platform-level gate (create properties, manage accounts across tenants). Uses the
+ * user's isPlatformAdmin flag loaded by `authenticate`. A tenant-level super_admin role
+ * deliberately does NOT pass this: it only ever grants power inside its own property.
+ */
+function requirePlatformAdmin() {
+  return (req, res, next) => {
+    if (!req.user) return next(new UnauthorizedError());
+    if (!req.user.isPlatformAdmin) {
+      return next(new ForbiddenError('Platform administrator access required'));
     }
+    return next();
   };
 }
 
-module.exports = { requirePermission, requireSuperAdmin };
+module.exports = { requirePermission, requirePlatformAdmin };

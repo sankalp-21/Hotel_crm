@@ -3,7 +3,7 @@ const controller = require('./controller');
 const { createPropertySchema, updatePropertySchema } = require('./validator');
 const { validate } = require('../../shared/validation/validate');
 const { authenticate } = require('../../shared/middleware/authenticate');
-const { requirePermission, requireSuperAdmin } = require('../../shared/middleware/rbac');
+const { requirePermission, requirePlatformAdmin } = require('../../shared/middleware/rbac');
 const { PERMISSIONS } = require('../auth/permissions');
 const { asyncHandler } = require('../../shared/errors/errorHandler');
 
@@ -12,7 +12,7 @@ const router = express.Router();
 router.post(
   '/',
   authenticate,
-  requireSuperAdmin(),
+  requirePlatformAdmin(),
   validate(createPropertySchema),
   asyncHandler(controller.create)
 );

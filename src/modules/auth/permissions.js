@@ -7,6 +7,8 @@
  */
 const PERMISSIONS = {
   USERS_CREATE: 'users:create',
+  USERS_READ: 'users:read',
+  USERS_UPDATE: 'users:update',
 
   CONTACTS_READ: 'contacts:read',
   CONTACTS_CREATE: 'contacts:create',
@@ -52,6 +54,8 @@ const ROLE_PERMISSION_DEFAULTS = {
   super_admin: Object.values(PERMISSIONS),
   property_manager: [
     PERMISSIONS.USERS_CREATE,
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.USERS_UPDATE,
     PERMISSIONS.CONTACTS_READ,
     PERMISSIONS.CONTACTS_CREATE,
     PERMISSIONS.CONTACTS_UPDATE,

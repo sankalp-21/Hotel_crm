@@ -10,6 +10,7 @@ const {
 const {
   UnauthorizedError,
   ConflictError,
+  ValidationError,
   TooManyRequestsError,
 } = require('../../shared/errors/AppError');
 const { assertCanAssignRole, filterAssignableRoles } = require('./roleAssignment');
@@ -182,6 +183,38 @@ async function createUser({ email, password, fullName, propertyId, roleId }, act
   return { id: user.id, email: user.email, fullName: user.fullName };
 }
 
+/**
+ * Change the signed-in user's own password. Wrong attempts count toward the same lockout as
+ * login (so this can't be used to brute-force the current password), and success revokes every
+ * refresh token so other devices must sign in again with the new password. (Access tokens
+ * already issued stay valid until they expire, at most JWT_ACCESS_EXPIRES_IN.)
+ *
+ * A wrong current password is a 422, not a 401: clients commonly treat 401 as "session expired".
+ */
+async function changePassword(actingUser, { currentPassword, newPassword }) {
+  await assertNotLockedOut(actingUser.email);
+
+  const user = await authRepository.findById(actingUser.id);
+  if (!user || !user.isActive) throw new UnauthorizedError();
+
+  const valid = await verifyPassword(currentPassword, user.passwordHash);
+  if (!valid) {
+    await recordFailedLogin(user.email);
+    throw new ValidationError('Current password is incorrect');
+  }
+
+  await authRepository.updatePasswordHash(user.id, await hashPassword(newPassword));
+  await authRepository.revokeAllRefreshTokensForUser(user.id);
+  await clearFailedLogin(user.email);
+
+  await logAudit({
+    userId: user.id,
+    action: 'auth.password_changed',
+    entityType: 'User',
+    entityId: user.id,
+  });
+}
+
 /** Roles the acting user may assign at this property (used to populate pickers). */
 async function listAssignableRoles(propertyId, actingUser) {
   const [roles, actor] = await Promise.all([
@@ -196,4 +229,4 @@ async function listAssignableRoles(propertyId, actingUser) {
   }));
 }
 
-module.exports = { login, refresh, logout, createUser, listAssignableRoles };
+module.exports = { login, refresh, logout, createUser, changePassword, listAssignableRoles };

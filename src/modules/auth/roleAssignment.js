@@ -40,6 +40,47 @@ function evaluateRoleAssignment(actor, role) {
   return { ok: true };
 }
 
+/**
+ * May `actor` modify an existing member who currently holds `targetRoles` at the property?
+ * Only if the actor could have granted every one of those roles themselves — so a manager
+ * can manage sales agents and other managers but can never touch (remove, demote,
+ * re-role) a super_admin.
+ */
+function evaluateMemberManagement(actor, targetRoles) {
+  for (const role of targetRoles) {
+    if (!evaluateRoleAssignment(actor, role).ok) {
+      return { ok: false, reason: `You cannot manage a member who holds the ${role.name} role` };
+    }
+  }
+  return { ok: true };
+}
+
+function assertCanManageMember({ actor, targetRoles }) {
+  const result = evaluateMemberManagement(actor, targetRoles);
+  if (!result.ok) throw new ForbiddenError(result.reason);
+}
+
+/** The permission that lets a member administer the property's users. */
+const ADMIN_PERMISSION = 'users:update';
+
+/**
+ * Would removing `roleId` (or ALL of the user's roles when roleId is omitted) from `userId`
+ * leave the property with nobody able to manage users?
+ *
+ * members: [{ userId, roles: [{ id, permissionCodes: string[] }] }] — everyone at the property.
+ * Only blocks a removal that takes the admin count from >0 to 0.
+ */
+function wouldLeaveNoAdmin(members, { userId, roleId }) {
+  const isAdmin = (roles) => roles.some((r) => r.permissionCodes.includes(ADMIN_PERMISSION));
+  const before = members.filter((m) => isAdmin(m.roles)).length;
+  const after = members.filter((m) => {
+    const roles =
+      m.userId === userId ? (roleId ? m.roles.filter((r) => r.id !== roleId) : []) : m.roles;
+    return isAdmin(roles);
+  }).length;
+  return before > 0 && after === 0;
+}
+
 /** Throwing wrapper used by the service. */
 function assertCanAssignRole({ actor, role }) {
   if (!role) throw new ValidationError('Unknown roleId');
@@ -54,7 +95,11 @@ function filterAssignableRoles(actor, roles) {
 
 module.exports = {
   RESTRICTED_ROLES,
+  ADMIN_PERMISSION,
   evaluateRoleAssignment,
+  evaluateMemberManagement,
+  assertCanManageMember,
+  wouldLeaveNoAdmin,
   assertCanAssignRole,
   filterAssignableRoles,
 };

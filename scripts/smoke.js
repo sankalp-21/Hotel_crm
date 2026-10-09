@@ -403,6 +403,147 @@ async function main() {
     bReplay
   );
 
+  section('User management (Phase 1.2)');
+  r = await call('GET', '/auth/me', { token: t, property: null });
+  const adminId = r.json?.user?.id;
+  check('seeded admin is a platform admin', r.json?.user?.isPlatformAdmin === true, r.json);
+  r = await call('GET', '/auth/me', { token: mt, property: null });
+  check('property manager is not a platform admin', r.json?.user?.isPlatformAdmin === false, r.json);
+
+  const teamEmail = `team-${run}@example.com`;
+  r = await call('POST', '/auth/users', { token: mt, headers: withKey(`mk-team-${run}`), body: userBody(teamEmail, mgrRoles.sales_agent) });
+  check('manager creates a team member (sales_agent) 201', r.status === 201, r);
+  const teamId = r.json?.id;
+
+  r = await call('GET', '/users', { token: t });
+  check(
+    'admin lists members, paginated (the demo hotel accumulates users across smoke runs)',
+    r.status === 200 && r.json?.items?.length > 0 && r.json?.total >= 3 && r.json?.pageSize === 20,
+    { total: r.json?.total, pageSize: r.json?.pageSize }
+  );
+  check(
+    'member list shows roles and exposes no credentials or platform flags',
+    (r.json?.items || []).every((u) => Array.isArray(u.roles) && u.passwordHash === undefined && u.isPlatformAdmin === undefined),
+    r.json?.items?.[0]
+  );
+  r = await call('GET', `/users?search=${run}`, { token: t });
+  const memberIds = (r.json?.items || []).map((u) => u.id);
+  check("this run's members are found by search", r.status === 200 && [mgrAId, teamId].every((id) => memberIds.includes(id)), r.json?.total);
+  r = await call('GET', `/users?search=${encodeURIComponent(EMAIL)}`, { token: t });
+  check('the admin is found by email', r.status === 200 && r.json?.items?.some((u) => u.id === adminId), r.json?.total);
+  r = await call('GET', `/users?search=team-${run}`, { token: t });
+  check('search narrows to one member', r.status === 200 && r.json?.total === 1, r.json?.total);
+  r = await call('GET', `/users/${teamId}`, { token: mt });
+  check('manager reads a member', r.status === 200 && r.json?.roles?.[0]?.name === 'sales_agent', r.json);
+
+  r = await call('POST', '/auth/login', { body: { email: teamEmail, password: mgrPassword }, property: null });
+  const teamTok = r.json?.accessToken;
+  r = await call('GET', '/users', { token: teamTok });
+  check('a sales_agent cannot list users -> 403', r.status === 403, r);
+
+  r = await call('DELETE', `/users/${adminId}/roles/${adminRoles.super_admin}`, { token: mt });
+  check('manager cannot remove a super_admin role -> 403', r.status === 403, r);
+  r = await call('DELETE', `/users/${adminId}`, { token: mt });
+  check('manager cannot remove a super_admin from the property -> 403', r.status === 403, r);
+  r = await call('POST', `/users/${teamId}/roles`, { token: mt, body: { roleId: adminRoles.super_admin } });
+  check('manager cannot grant super_admin -> 403', r.status === 403, r);
+
+  r = await call('POST', `/users/${teamId}/roles`, { token: mt, body: { roleId: mgrRoles.auditor } });
+  check('manager adds the auditor role -> 201, now two roles', r.status === 201 && r.json?.roles?.length === 2, r.json);
+  r = await call('POST', `/users/${teamId}/roles`, { token: mt, body: { roleId: mgrRoles.auditor } });
+  check('adding the same role again -> 409', r.status === 409, r);
+  r = await call('DELETE', `/users/${teamId}/roles/${mgrRoles.auditor}`, { token: mt });
+  check('manager removes the auditor role -> 200, back to one role', r.status === 200 && r.json?.roles?.length === 1, r.json);
+  r = await call('DELETE', `/users/${teamId}/roles/${mgrRoles.auditor}`, { token: mt });
+  check('removing a role they do not hold -> 404', r.status === 404, r);
+  r = await call('GET', `/users/${teamId}`, { token: tb, property: propB });
+  check("tenant B cannot see tenant A's member -> 404", r.status === 404, r);
+  r = await call('GET', '/users/33333333-3333-3333-3333-333333333333', { token: mt });
+  check('unknown user id -> 404', r.status === 404, r);
+
+  // Give an existing account (tenant B's manager) access to this property, then take it away.
+  r = await call('POST', '/users/members', { token: t, body: { email: mgrBEmail, roleId: adminRoles.auditor } });
+  check('admin adds an existing account to this property by email -> 201', r.status === 201 && r.json?.roles?.[0]?.name === 'auditor', r.json);
+  r = await call('GET', '/properties', { token: tb, property: null });
+  check('that account now sees both properties', r.json?.items?.some((p) => p.id === PROPERTY_ID) && r.json?.items?.some((p) => p.id === propB), r.json?.items?.length);
+  r = await call('POST', '/users/members', { token: mt, body: { email: mgrBEmail, roleId: adminRoles.super_admin } });
+  check('manager cannot add anyone as super_admin by email -> 403', r.status === 403, r);
+  r = await call('DELETE', `/users/${mgrBId}`, { token: t });
+  check('removing them from this property -> 204', r.status === 204, r);
+  r = await call('GET', '/properties', { token: tb, property: null });
+  check('they lose this property but keep their own', !r.json?.items?.some((p) => p.id === PROPERTY_ID) && r.json?.items?.some((p) => p.id === propB), r.json?.items?.length);
+  r = await call('POST', '/users/members', { token: t, body: { email: `ghost-${run}@example.com`, roleId: adminRoles.auditor } });
+  check('adding an unknown email -> 404', r.status === 404, r);
+
+  r = await call('DELETE', `/users/${teamId}`, { token: mt });
+  check('manager removes a member from the property -> 204', r.status === 204, r);
+  r = await call('GET', '/contacts', { token: teamTok });
+  check('removed member loses access at once (their token is still valid) -> 403', r.status === 403, r);
+  r = await call('GET', `/users/${teamId}`, { token: mt });
+  check('removed member is no longer listed -> 404', r.status === 404, r);
+
+  // A property must always keep someone who can manage its users (tenant B: the creator + mgrB).
+  r = await call('DELETE', `/users/${adminId}`, { token: tb, property: propB });
+  check("tenant B's manager cannot remove the super_admin who created the property -> 403", r.status === 403, r);
+  r = await call('DELETE', `/users/${adminId}`, { token: t, property: propB });
+  check('the super_admin can step down while another admin remains -> 204', r.status === 204, r);
+  r = await call('DELETE', `/users/${mgrBId}`, { token: tb, property: propB });
+  check('LAST ADMIN: the only remaining admin cannot be removed -> 409', r.status === 409, r);
+  r = await call('DELETE', `/users/${mgrBId}/roles/${rolesB.property_manager}`, { token: tb, property: propB });
+  check('LAST ADMIN: ...nor demoted by removing their role -> 409', r.status === 409, r);
+
+  section('Change password (Phase 1.2)');
+  const cpEmail = `cp-${run}@example.com`;
+  const cpNew = `Newpass-${run}-9z`;
+  r = await call('POST', '/auth/users', { token: t, headers: withKey(`mk-cp-${run}`), body: userBody(cpEmail, adminRoles.sales_agent) });
+  check('create an account for the password test 201', r.status === 201, r);
+  const cpId = r.json?.id;
+  r = await call('POST', '/auth/login', { body: { email: cpEmail, password: mgrPassword }, property: null });
+  const cpRefresh1 = r.json?.refreshToken;
+  const cpTok1 = r.json?.accessToken;
+  check('account logs in', r.status === 200 && Boolean(cpTok1), r);
+
+  r = await call('POST', '/auth/change-password', { property: null, body: { currentPassword: mgrPassword, newPassword: cpNew } });
+  check('change-password needs a token -> 401', r.status === 401, r);
+  r = await call('POST', '/auth/change-password', { token: cpTok1, property: null, body: { currentPassword: 'definitely-wrong', newPassword: cpNew } });
+  check('wrong current password -> 422 (not 401)', r.status === 422, r);
+  r = await call('POST', '/auth/change-password', { token: cpTok1, property: null, body: { currentPassword: mgrPassword, newPassword: mgrPassword } });
+  check('new password equal to the current one -> 422', r.status === 422, r);
+  r = await call('POST', '/auth/change-password', { token: cpTok1, property: null, body: { currentPassword: mgrPassword, newPassword: 'weak' } });
+  check('weak new password -> 422', r.status === 422, r);
+  r = await call('POST', '/auth/change-password', { token: cpTok1, property: null, body: { currentPassword: mgrPassword, newPassword: cpNew } });
+  check('change password -> 204', r.status === 204, r);
+  r = await call('POST', '/auth/login', { body: { email: cpEmail, password: mgrPassword }, property: null });
+  check('the old password no longer works -> 401', r.status === 401, r);
+  r = await call('POST', '/auth/login', { body: { email: cpEmail, password: cpNew }, property: null });
+  const cpTok2 = r.json?.accessToken;
+  const cpRefresh2 = r.json?.refreshToken;
+  check('the new password works', r.status === 200 && Boolean(cpTok2), r);
+  r = await call('POST', '/auth/refresh', { body: { refreshToken: cpRefresh1 }, property: null });
+  check('sessions from before the change are signed out (old refresh token -> 401)', r.status === 401, r);
+
+  section('Platform administration (Phase 1.2)');
+  r = await call('GET', '/platform/users', { token: mt, property: null });
+  check('a property manager cannot use platform endpoints -> 403', r.status === 403, r);
+  r = await call('GET', `/platform/users?search=cp-${run}`, { token: t, property: null });
+  check('platform admin finds the account', r.status === 200 && r.json?.total === 1 && r.json?.items?.[0]?.id === cpId && r.json.items[0].isActive === true, r.json);
+  r = await call('PATCH', `/platform/users/${adminId}/status`, { token: t, property: null, body: { isActive: false } });
+  check('platform admin cannot disable themselves -> 422', r.status === 422, r);
+  r = await call('PATCH', `/platform/users/${cpId}/status`, { token: mt, property: null, body: { isActive: false } });
+  check('a property manager cannot disable accounts -> 403', r.status === 403, r);
+  r = await call('PATCH', `/platform/users/${cpId}/status`, { token: t, property: null, body: { isActive: false } });
+  check('platform admin disables the account -> 200', r.status === 200 && r.json?.isActive === false, r);
+  r = await call('GET', '/auth/me', { token: cpTok2, property: null });
+  check('DEACTIVATION IS IMMEDIATE: their still-valid access token is rejected -> 401', r.status === 401, r);
+  r = await call('POST', '/auth/refresh', { body: { refreshToken: cpRefresh2 }, property: null });
+  check('their refresh token is revoked -> 401', r.status === 401, r);
+  r = await call('POST', '/auth/login', { body: { email: cpEmail, password: cpNew }, property: null });
+  check('they cannot log in while disabled -> 401', r.status === 401, r);
+  r = await call('PATCH', `/platform/users/${cpId}/status`, { token: t, property: null, body: { isActive: true } });
+  check('platform admin re-enables the account -> 200', r.status === 200 && r.json?.isActive === true, r);
+  r = await call('POST', '/auth/login', { body: { email: cpEmail, password: cpNew }, property: null });
+  check('they can log in again', r.status === 200 && Boolean(r.json?.accessToken), r);
+
   section('Reports / audit / retention');
   r = await call('GET', '/reports/dashboard', { token: t });
   check('dashboard 200', r.status === 200 && r.json?.deals, r);

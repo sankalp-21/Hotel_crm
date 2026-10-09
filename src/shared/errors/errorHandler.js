@@ -7,6 +7,11 @@ const { AppError } = require('./AppError');
  * Usage: router.post('/x', asyncHandler(controller.create))
  */
 function asyncHandler(fn) {
+  // Fail at startup, not on the first request: a route wired to a misspelled or missing
+  // controller function would otherwise register fine and only blow up when called.
+  if (typeof fn !== 'function') {
+    throw new TypeError('asyncHandler: route handler is not a function (check the controller export)');
+  }
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 

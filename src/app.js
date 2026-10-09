@@ -12,6 +12,8 @@ const { errorHandler, notFoundHandler } = require('./shared/errors/errorHandler'
 const { globalRateLimiter } = require('./shared/middleware/rateLimit');
 
 const authRoutes = require('./modules/auth/routes');
+const usersRoutes = require('./modules/users/routes');
+const platformRoutes = require('./modules/platform/routes');
 const propertyRoutes = require('./modules/property/routes');
 const contactsRoutes = require('./modules/contacts/routes');
 const companiesRoutes = require('./modules/companies/routes');
@@ -93,6 +95,8 @@ function createApp() {
   });
 
   app.use('/auth', authRoutes);
+  app.use('/users', usersRoutes);
+  app.use('/platform', platformRoutes);
   app.use('/properties', propertyRoutes);
   app.use('/contacts', contactsRoutes);
   app.use('/companies', companiesRoutes);

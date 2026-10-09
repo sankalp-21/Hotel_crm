@@ -41,6 +41,9 @@ model User {
   passwordHash String
   fullName     String
   isActive     Boolean  @default(true)
+  // Platform operator (can create properties, manage accounts across tenants).
+  // Deliberately NOT a role: tenant roles only ever grant power inside one property.
+  isPlatformAdmin Boolean @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
