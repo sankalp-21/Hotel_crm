@@ -36,6 +36,18 @@ const envSchema = z
     LOGIN_MAX_FAILURES: z.coerce.number().default(5),
     LOGIN_LOCKOUT_SECONDS: z.coerce.number().default(15 * 60),
 
+    /**
+     * Run the outbox dispatcher, reminder sweep and housekeeping inside the API process.
+     * Safe alongside separate `npm run worker` processes (work is claimed with row locks), so
+     * the default is on. Set to false on API instances when workers run separately.
+     */
+    RUN_WORKERS_IN_API: z
+      .string()
+      .optional()
+      .transform((v) => !(v === 'false' || v === '0')),
+    /** After this many failed deliveries an outbox event is dead-lettered (status=failed). */
+    OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(8),
+
     /** When unset in production, email sends fail closed (no silent stub). */
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().optional(),

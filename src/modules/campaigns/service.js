@@ -4,7 +4,8 @@ const notificationsRepository = require('../notifications/repository');
 const channel = require('../notifications/channel');
 const { NotFoundError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
-const { emitCampaignSent } = require('./events');
+const { recordCampaignSent } = require('./events');
+const { withTransaction } = require('../../shared/db/transaction');
 const logger = require('../../config/logger');
 
 function renderTemplate(template, contact) {
@@ -172,13 +173,15 @@ async function sendCampaign(id, propertyId, actingUser) {
   }
 
   const finalStatus = failedCount > 0 && sentCount === 0 ? 'failed' : 'sent';
-  const updated = await campaignsRepository.update(id, propertyId, {
-    status: finalStatus,
-    sentAt: new Date(),
-    sentCount,
-    skippedCount,
-    failedCount,
-    totalRecipients: recipients.length,
+  const counts = { sentCount, skippedCount, failedCount, totalRecipients: recipients.length };
+  await withTransaction(async (tx) => {
+    const updated = await campaignsRepository.update(
+      id,
+      propertyId,
+      { status: finalStatus, sentAt: new Date(), ...counts },
+      tx
+    );
+    await recordCampaignSent(tx, updated, counts);
   });
 
   await logAudit({
@@ -190,7 +193,6 @@ async function sendCampaign(id, propertyId, actingUser) {
     metadata: { sentCount, skippedCount, failedCount, totalRecipients: recipients.length },
   });
 
-  emitCampaignSent(updated, { sentCount, skippedCount, failedCount, totalRecipients: recipients.length });
   return getCampaign(id, propertyId);
 }
 

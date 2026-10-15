@@ -1,13 +1,18 @@
-const bus = require('../../shared/events/bus');
+const { publish } = require('../../shared/events/outbox');
 
-function emitCampaignSent(campaign, counts) {
-  bus.emitEvent('campaign.sent', {
-    campaignId: campaign.id,
-    propertyId: campaign.propertyId,
-    segmentId: campaign.segmentId,
-    channel: campaign.channel,
-    ...counts,
+function recordCampaignSent(db, campaign, counts) {
+  return publish(db, {
+    aggregateType: 'Campaign',
+    aggregateId: campaign.id,
+    eventType: 'campaign.sent',
+    payload: {
+      campaignId: campaign.id,
+      propertyId: campaign.propertyId,
+      segmentId: campaign.segmentId,
+      channel: campaign.channel,
+      ...counts,
+    },
   });
 }
 
-module.exports = { emitCampaignSent };
+module.exports = { recordCampaignSent };

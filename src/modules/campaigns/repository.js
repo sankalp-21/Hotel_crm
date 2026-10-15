@@ -48,8 +48,8 @@ function search({ propertyId, search, status, page, pageSize }) {
   ]);
 }
 
-function update(id, propertyId, data) {
-  return prisma.campaign.update({ where: { id, propertyId }, data, include: campaignInclude });
+function update(id, propertyId, data, db = prisma) {
+  return db.campaign.update({ where: { id, propertyId }, data, include: campaignInclude });
 }
 
 function createRecipients(rows) {

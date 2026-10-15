@@ -6,10 +6,11 @@ const { NotFoundError, ValidationError } = require('../../shared/errors/AppError
 const { assertUserHasPropertyAccess } = require('../../shared/tenancy/userAccess');
 const { logAudit } = require('../audit/service');
 const {
-  emitActivityCreated,
-  emitActivityCompleted,
-  emitActivityReminderDue,
+  recordActivityCreated,
+  recordActivityCompleted,
+  recordActivityReminderDue,
 } = require('./events');
+const { withTransaction } = require('../../shared/db/transaction');
 
 async function assertContactInProperty(contactId, propertyId) {
   if (!contactId) return;
@@ -37,11 +38,18 @@ async function createActivity(data, actingUser) {
     throw new ValidationError('At least one of contactId or dealId is required');
   }
 
-  const activity = await activitiesRepository.create({
-    ...data,
-    contactId,
-    assignedTo: data.assignedTo ?? actingUser?.id ?? null,
-    createdBy: actingUser?.id ?? null,
+  const activity = await withTransaction(async (tx) => {
+    const created = await activitiesRepository.create(
+      {
+        ...data,
+        contactId,
+        assignedTo: data.assignedTo ?? actingUser?.id ?? null,
+        createdBy: actingUser?.id ?? null,
+      },
+      tx
+    );
+    await recordActivityCreated(tx, created);
+    return created;
   });
 
   await logAudit({
@@ -53,7 +61,6 @@ async function createActivity(data, actingUser) {
     metadata: { type: activity.type, subject: activity.subject },
   });
 
-  emitActivityCreated(activity);
   return activity;
 }
 
@@ -90,7 +97,11 @@ async function updateActivity(id, propertyId, data, actingUser) {
     patch.completedAt = null;
   }
 
-  const activity = await activitiesRepository.update(id, propertyId, patch);
+  const activity = await withTransaction(async (tx) => {
+    const updated = await activitiesRepository.update(id, propertyId, patch, tx);
+    if (data.status === 'completed') await recordActivityCompleted(tx, updated);
+    return updated;
+  });
   await logAudit({
     propertyId,
     userId: actingUser?.id,
@@ -100,10 +111,6 @@ async function updateActivity(id, propertyId, data, actingUser) {
     metadata: data,
   });
 
-  if (data.status === 'completed') {
-    emitActivityCompleted(activity);
-  }
-
   return activity;
 }
 
@@ -111,9 +118,15 @@ async function completeActivity(id, propertyId, actingUser) {
   const current = await getActivity(id, propertyId);
   if (current.status === 'completed') return current;
 
-  const activity = await activitiesRepository.update(id, propertyId, {
-    status: 'completed',
-    completedAt: new Date(),
+  const activity = await withTransaction(async (tx) => {
+    const updated = await activitiesRepository.update(
+      id,
+      propertyId,
+      { status: 'completed', completedAt: new Date() },
+      tx
+    );
+    await recordActivityCompleted(tx, updated);
+    return updated;
   });
 
   await logAudit({
@@ -124,7 +137,6 @@ async function completeActivity(id, propertyId, actingUser) {
     entityId: id,
   });
 
-  emitActivityCompleted(activity);
   return activity;
 }
 
@@ -133,17 +145,28 @@ async function completeActivity(id, propertyId, actingUser) {
  * before emitting so a crash mid-batch won't double-send forever (at-most-once
  * for the stub channel is fine for Phase 3).
  */
-async function processDueReminders(now = new Date()) {
-  const due = await activitiesRepository.findDueReminders(now);
-  const results = [];
+const REMINDER_BATCH_SIZE = 50;
 
-  for (const activity of due) {
-    await activitiesRepository.markReminderSent(activity.id, now);
-    emitActivityReminderDue(activity);
-    results.push(activity.id);
-  }
+/**
+ * Queue due reminders. In ONE transaction: claim the rows (locked, skip-locked, flagged as
+ * queued) and write their outbox events. Either every claimed reminder is queued or none is, and
+ * concurrent sweeps never claim the same activity. Delivery (and retry on failure) is the outbox
+ * dispatcher's job.
+ */
+async function processDueReminders() {
+  const claimed = await withTransaction(async (tx) => {
+    const rows = await activitiesRepository.claimDueReminders(tx, REMINDER_BATCH_SIZE);
+    for (const activity of rows) {
+      await recordActivityReminderDue(tx, activity);
+    }
+    return rows;
+  });
 
-  return { processed: results.length, activityIds: results };
+  return {
+    processed: claimed.length,
+    activityIds: claimed.map((a) => a.id),
+    batchSize: REMINDER_BATCH_SIZE,
+  };
 }
 
 /**

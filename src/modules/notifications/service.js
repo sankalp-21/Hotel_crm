@@ -7,47 +7,57 @@ const RESOLVERS = {
   'activity.reminder_due': repository.resolveActivityReminderDue,
 };
 
-async function handleEvent(eventType, payload) {
+/**
+ * Outbox handler for notification-producing events. Idempotent and retry-friendly:
+ *  - `meta.eventId` keys the notification row, so a redelivered event never sends twice once it
+ *    has succeeded;
+ *  - a failed send is recorded AND rethrown, so the outbox retries it with backoff (and
+ *    dead-letters it after OUTBOX_MAX_ATTEMPTS) instead of silently losing the notification.
+ * Events with no recipient (user removed, no access) are skipped without error — not retryable.
+ */
+async function handleEvent(eventType, payload, meta = {}) {
   const resolve = RESOLVERS[eventType];
-  if (!resolve) return;
+  if (!resolve) return null;
 
   const context = await resolve(payload);
   if (!context) {
     logger.debug({ eventType, payload }, 'notifications:skipped_no_recipient');
-    return;
+    return null;
   }
 
   const template = templates[eventType];
   if (!template) {
     logger.warn({ eventType }, 'notifications:missing_template');
-    return;
+    return null;
+  }
+
+  const dedupeKey = meta.eventId ? `${meta.eventId}:email` : null;
+  if (dedupeKey) {
+    const existing = await repository.findByDedupeKey(dedupeKey);
+    if (existing && existing.status === 'sent') return existing;
   }
 
   const { subject, body } = template(context);
-
-  let status = 'queued';
-  let failureReason = null;
-  try {
-    await channel.send({ to: context.recipientEmail, subject, body });
-    status = 'sent';
-  } catch (err) {
-    status = 'failed';
-    failureReason = err.message;
-    logger.error({ err, eventType }, 'notifications:send_failed');
-  }
-
-  return repository.createNotificationRecord({
+  const record = {
     propertyId: context.propertyId,
     eventType,
     channel: 'email',
     recipientEmail: context.recipientEmail,
     subject,
     body,
-    status,
-    failureReason,
     payload: { ...payload, contactId: context.contactId ?? payload.contactId ?? null },
-    sentAt: status === 'sent' ? new Date() : null,
-  });
+    dedupeKey,
+  };
+
+  try {
+    await channel.send({ to: context.recipientEmail, subject, body });
+  } catch (err) {
+    logger.error({ err, eventType }, 'notifications:send_failed');
+    await repository.saveNotification({ ...record, status: 'failed', failureReason: err.message, sentAt: null });
+    throw err;
+  }
+
+  return repository.saveNotification({ ...record, status: 'sent', failureReason: null, sentAt: new Date() });
 }
 
 async function listNotifications(propertyId, query) {

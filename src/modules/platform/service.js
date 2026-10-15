@@ -1,6 +1,7 @@
 const platformRepository = require('./repository');
 const authRepository = require('../auth/repository');
-const { NotFoundError, ValidationError } = require('../../shared/errors/AppError');
+const outboxRepository = require('../../shared/events/outboxRepository');
+const { NotFoundError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 
 async function listUsers(query) {
@@ -35,4 +36,26 @@ async function setUserStatus(userId, { isActive }, actingUser) {
   return updated;
 }
 
-module.exports = { listUsers, setUserStatus };
+async function listOutbox(query) {
+  const { items, total, counts } = await outboxRepository.list(query);
+  return { items, total, counts, page: query.page, pageSize: query.pageSize };
+}
+
+/** Put a dead-lettered event back in the queue (after fixing whatever made it fail). */
+async function retryOutboxEvent(id, actingUser) {
+  const changed = await outboxRepository.retryFailed(id);
+  if (changed === 0) {
+    const event = await outboxRepository.findById(id);
+    if (!event) throw new NotFoundError('Outbox event');
+    throw new ConflictError(`Only failed events can be retried (this one is ${event.status})`);
+  }
+  await logAudit({
+    userId: actingUser.id,
+    action: 'platform.outbox_retried',
+    entityType: 'OutboxEvent',
+    entityId: id,
+  });
+  return { id, status: 'pending' };
+}
+
+module.exports = { listUsers, setUserStatus, listOutbox, retryOutboxEvent };

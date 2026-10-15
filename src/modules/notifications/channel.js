@@ -12,6 +12,10 @@ function getTransporter() {
     host: env.SMTP_HOST,
     port: env.SMTP_PORT || 587,
     secure: Boolean(env.SMTP_SECURE),
+    // Bounded so a hung SMTP server fails the delivery (and gets retried) instead of holding it.
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 30_000,
     auth: env.SMTP_USER
       ? {
           user: env.SMTP_USER,

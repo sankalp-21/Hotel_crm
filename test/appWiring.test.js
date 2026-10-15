@@ -50,6 +50,8 @@ const PROTECTED = [
   ['DELETE', `/users/${ID}`],
   ['GET', '/platform/users'],
   ['PATCH', `/platform/users/${ID}/status`],
+  ['GET', '/platform/outbox'],
+  ['POST', `/platform/outbox/${ID}/retry`],
   ['POST', '/auth/change-password'],
   ['GET', '/auth/roles'],
   ['POST', '/properties'],

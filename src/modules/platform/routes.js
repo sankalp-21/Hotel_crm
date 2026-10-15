@@ -1,6 +1,6 @@
 const express = require('express');
 const controller = require('./controller');
-const { userIdParams, statusSchema, listUsersSchema } = require('./validator');
+const { userIdParams, statusSchema, listUsersSchema, outboxIdParams, listOutboxSchema } = require('./validator');
 const { validate } = require('../../shared/validation/validate');
 const { authenticate } = require('../../shared/middleware/authenticate');
 const { requirePlatformAdmin } = require('../../shared/middleware/rbac');
@@ -16,5 +16,8 @@ router.patch(
   validate(statusSchema),
   asyncHandler(controller.setUserStatus)
 );
+
+router.get('/outbox', validate(listOutboxSchema, 'query'), asyncHandler(controller.listOutbox));
+router.post('/outbox/:id/retry', validate(outboxIdParams, 'params'), asyncHandler(controller.retryOutboxEvent));
 
 module.exports = router;

@@ -4,7 +4,8 @@ const contactsRepository = require('../contacts/repository');
 const companiesRepository = require('../companies/repository');
 const { NotFoundError, ValidationError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
-const { emitDealCreated, emitDealStageChanged } = require('./events');
+const { recordDealCreated, recordDealStageChanged } = require('./events');
+const { withTransaction } = require('../../shared/db/transaction');
 
 async function assertContactInProperty(contactId, propertyId) {
   if (!contactId) return;
@@ -39,11 +40,22 @@ async function createDeal(data, actingUser) {
   const stage = await resolveStage(data.propertyId, data.stageId);
   const { stageId: _ignored, ...rest } = data;
 
-  const deal = await dealsRepository.create({
-    ...rest,
-    stageId: stage.id,
-    createdBy: actingUser?.id,
-    closedAt: stage.isWon || stage.isLost ? new Date() : null,
+  // The deal and its events commit together: no deal without its events, no events without a deal.
+  const deal = await withTransaction(async (tx) => {
+    const created = await dealsRepository.create(
+      {
+        ...rest,
+        stageId: stage.id,
+        createdBy: actingUser?.id,
+        closedAt: stage.isWon || stage.isLost ? new Date() : null,
+      },
+      tx
+    );
+    await recordDealCreated(tx, created);
+    if (stage.isWon || stage.isLost) {
+      await recordDealStageChanged(tx, created, null, stage);
+    }
+    return created;
   });
 
   await logAudit({
@@ -54,11 +66,6 @@ async function createDeal(data, actingUser) {
     entityId: deal.id,
     metadata: { title: deal.title, stageId: deal.stageId },
   });
-
-  emitDealCreated(deal);
-  if (stage.isWon || stage.isLost) {
-    emitDealStageChanged(deal, null, stage);
-  }
 
   return deal;
 }
@@ -97,9 +104,18 @@ async function transitionDeal(id, propertyId, { stageId }, actingUser) {
 
   if (stage.id === current.stageId) return current;
 
-  const deal = await dealsRepository.update(id, propertyId, {
-    stageId: stage.id,
-    closedAt: stage.isWon || stage.isLost ? new Date() : null,
+  const deal = await withTransaction(async (tx) => {
+    const updated = await dealsRepository.update(
+      id,
+      propertyId,
+      {
+        stageId: stage.id,
+        closedAt: stage.isWon || stage.isLost ? new Date() : null,
+      },
+      tx
+    );
+    await recordDealStageChanged(tx, updated, current.stageId, stage);
+    return updated;
   });
 
   await logAudit({
@@ -117,7 +133,6 @@ async function transitionDeal(id, propertyId, { stageId }, actingUser) {
     },
   });
 
-  emitDealStageChanged(deal, current.stageId, stage);
   return deal;
 }
 

@@ -17,6 +17,7 @@ const REMINDER_WAIT = Number(process.env.REMINDER_WAIT_SECONDS || 40);
 
 const run = Date.now().toString(36);
 const tag = `smoke-${run}`;
+let rateLimited = false;
 let passed = 0;
 let failed = 0;
 const failures = [];
@@ -28,7 +29,10 @@ function check(name, cond, extra) {
   } else {
     failed += 1;
     failures.push(name);
-    console.log(`  ✗ ${name}${extra !== undefined ? `  -> ${JSON.stringify(extra).slice(0, 300)}` : ''}`);
+    // Response headers are noise in a failure line; drop them (and keep it short).
+    const shown = extra === undefined ? '' : `  -> ${JSON.stringify(extra, (k, v) => (k === 'headers' ? undefined : v)).slice(0, 300)}`;
+    console.log(`  ✗ ${name}${shown}`);
+    if (extra && extra.status === 429) rateLimited = true;
   }
 }
 
@@ -544,6 +548,67 @@ async function main() {
   r = await call('POST', '/auth/login', { body: { email: cpEmail, password: cpNew }, property: null });
   check('they can log in again', r.status === 200 && Boolean(r.json?.accessToken), r);
 
+  section('Outbox & reliable events (Phase 2)');
+  const waitFor = async (fn, ms = 25000, step = 1000) => {
+    const end = Date.now() + ms;
+    let last;
+    while (Date.now() < end) {
+      last = await fn();
+      if (last.ok) return last;
+      await sleep(step);
+    }
+    return last;
+  };
+  const events = async (aggregateId) => {
+    const res = await call('GET', `/platform/outbox?aggregateId=${aggregateId}&pageSize=100`, { token: t, property: null });
+    return { res, items: res.json?.items || [] };
+  };
+  const ofType = (items, type) => items.filter((e) => e.eventType === type);
+  const states = (items) => items.map((e) => `${e.eventType}:${e.status}`);
+
+  r = await call('GET', '/platform/outbox', { token: mt, property: null });
+  check('a property manager cannot inspect the outbox -> 403', r.status === 403, r);
+
+  const actWait = await waitFor(async () => {
+    const { items } = await events(activityId);
+    const done = ['activity.created', 'activity.reminder_due', 'activity.completed'].every((tp) => ofType(items, tp).some((e) => e.status === 'published'));
+    return { ok: done, items };
+  });
+  check('activity events recorded and DELIVERED: created, reminder_due, completed', actWait.ok, states(actWait.items));
+  check('the reminder was queued exactly once (no duplicates)', ofType(actWait.items, 'activity.reminder_due').length === 1, states(actWait.items));
+  check('no activity event is stuck or failed', actWait.items.every((e) => e.status === 'published'), states(actWait.items));
+
+  const dealWait = await waitFor(async () => {
+    const { items } = await events(dealId);
+    const done = ['deal.created', 'deal.stage_changed', 'deal.won'].every((tp) => ofType(items, tp).some((e) => e.status === 'published'));
+    return { ok: done, items };
+  });
+  check('deal events recorded and delivered: created, stage_changed, won', dealWait.ok, states(dealWait.items));
+  check('both stage changes (Qualified, Won) produced an event', ofType(dealWait.items, 'deal.stage_changed').length === 2, states(dealWait.items));
+  check('a deal moved to Won produced exactly one deal.won', ofType(dealWait.items, 'deal.won').length === 1, states(dealWait.items));
+
+  const campWait = await waitFor(async () => {
+    const { items } = await events(campaignId);
+    return { ok: ofType(items, 'campaign.sent').some((e) => e.status === 'published'), items };
+  });
+  check('campaign.sent recorded and delivered', campWait.ok, states(campWait.items));
+
+  r = await call('GET', '/notifications?pageSize=100', { token: t });
+  const reminderNotes = (r.json?.items || []).filter((n) => n.eventType === 'activity.reminder_due' && n.payload?.activityId === activityId);
+  check('exactly one reminder notification exists for the activity, and it was sent', reminderNotes.length === 1 && reminderNotes[0].status === 'sent', reminderNotes.map((n) => n.status));
+
+  const anyEvent = actWait.items[0];
+  r = await call('POST', `/platform/outbox/${anyEvent?.id}/retry`, { token: t, property: null });
+  check('retrying an event that is not failed -> 409', r.status === 409, r);
+  r = await call('POST', '/platform/outbox/55555555-5555-5555-5555-555555555555/retry', { token: t, property: null });
+  check('retrying an unknown event -> 404', r.status === 404, r);
+  r = await call('POST', `/platform/outbox/${anyEvent?.id}/retry`, { token: mt, property: null });
+  check('a property manager cannot retry outbox events -> 403', r.status === 403, r);
+
+  r = await call('GET', '/platform/outbox?status=failed', { token: t, property: null });
+  check('the dead-letter queue is readable (shows counts by status)', r.status === 200 && typeof r.json?.counts?.failed === 'number', r.json?.counts);
+  console.log(`  ℹ outbox counts: ${JSON.stringify(r.json?.counts)}`);
+
   section('Reports / audit / retention');
   r = await call('GET', '/reports/dashboard', { token: t });
   check('dashboard 200', r.status === 200 && r.json?.deals, r);
@@ -567,6 +632,13 @@ main()
   })
   .finally(() => {
     console.log(`\n${passed} passed, ${failed} failed`);
+    if (rateLimited) {
+      console.log(
+        '\n⚠ Some requests were rate limited (429). That is the server protecting itself, not a bug.\n' +
+          '  For local runs set RATE_LIMIT_MAX=5000 and AUTH_RATE_LIMIT_MAX=200 in .env, restart the server,\n' +
+          '  and clear the counters (see the instructions), then run again.'
+      );
+    }
     if (failures.length) {
       console.log('Failures:');
       failures.forEach((f) => console.log(`  - ${f}`));

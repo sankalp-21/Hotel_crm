@@ -5,8 +5,8 @@ const activityInclude = {
   deal: { select: { id: true, title: true, stageId: true } },
 };
 
-function create(data) {
-  return prisma.activity.create({ data, include: activityInclude });
+function create(data, db = prisma) {
+  return db.activity.create({ data, include: activityInclude });
 }
 
 function findById(id, propertyId) {
@@ -57,31 +57,39 @@ function search({
   ]);
 }
 
-function update(id, propertyId, data) {
-  return prisma.activity.update({ where: { id, propertyId }, data, include: activityInclude });
+function update(id, propertyId, data, db = prisma) {
+  return db.activity.update({ where: { id, propertyId }, data, include: activityInclude });
 }
 
 /**
  * Due reminders: open activities with reminderAt in the past and not yet sent.
  */
-function findDueReminders(now = new Date(), take = 50) {
-  return prisma.activity.findMany({
-    where: {
-      status: 'open',
-      reminderAt: { lte: now },
-      reminderSentAt: null,
-    },
-    orderBy: { reminderAt: 'asc' },
-    take,
-    include: activityInclude,
-  });
-}
-
-function markReminderSent(id, sentAt = new Date()) {
-  return prisma.activity.update({
-    where: { id },
-    data: { reminderSentAt: sentAt },
-  });
+/**
+ * Atomically claim activities whose reminder is due: lock them, flag `reminderSentAt` (meaning
+ * "reminder queued"), and return them. Must run inside the same transaction that writes the
+ * matching outbox events, so a reminder is either fully queued or not claimed at all.
+ *
+ * FOR UPDATE SKIP LOCKED: concurrent sweeps (several instances) get disjoint rows, so each
+ * reminder is queued exactly once.
+ *
+ * Uses the database clock as UTC: Prisma stores DateTime as UTC wall-clock in `timestamp`
+ * columns, and comparing those with a zone-aware now() would shift by the server's UTC offset.
+ */
+function claimDueReminders(db, limit) {
+  return db.$queryRaw`
+    WITH due AS (
+      SELECT id FROM activities
+       WHERE status = 'open' AND "reminderAt" <= timezone('UTC', now()) AND "reminderSentAt" IS NULL
+       ORDER BY "reminderAt" ASC
+       LIMIT ${limit}::int
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE activities a
+       SET "reminderSentAt" = timezone('UTC', now())
+      FROM due
+     WHERE a.id = due.id
+ RETURNING a.id, a."propertyId", a."contactId", a."dealId", a.type, a.subject,
+           a."dueAt", a."reminderAt", a."assignedTo", a."createdBy"`;
 }
 
 function listByContact(contactId, propertyId, { skip = 0, take = 50 } = {}) {
@@ -99,7 +107,6 @@ module.exports = {
   findById,
   search,
   update,
-  findDueReminders,
-  markReminderSent,
+  claimDueReminders,
   listByContact,
 };

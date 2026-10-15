@@ -171,31 +171,9 @@ async function purgeExpiredKeys(now = new Date()) {
   return result.count;
 }
 
-let cleanupTimer = null;
-
-function startIdempotencyCleanup({ intervalMs = 60 * 60 * 1000 } = {}) {
-  if (cleanupTimer) return;
-  const run = () =>
-    purgeExpiredKeys()
-      .then((count) => {
-        if (count > 0) logger.info({ count }, 'idempotency:purged_expired_keys');
-      })
-      .catch((err) => logger.error({ err }, 'idempotency:purge_failed'));
-  run();
-  cleanupTimer = setInterval(run, intervalMs);
-  cleanupTimer.unref();
-}
-
-function stopIdempotencyCleanup() {
-  if (cleanupTimer) clearInterval(cleanupTimer);
-  cleanupTimer = null;
-}
-
 module.exports = {
   idempotent,
   purgeExpiredKeys,
-  startIdempotencyCleanup,
-  stopIdempotencyCleanup,
   COMPLETED_TTL_MS,
   IN_PROGRESS_LEASE_MS,
 };

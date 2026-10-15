@@ -450,11 +450,17 @@ model OutboxEvent {
   aggregateId   String
   eventType     String
   payload       Json
-  status        String    @default("pending") // pending | published
+  // pending -> processing (leased by one dispatcher) -> published | back to pending (retry) | failed (dead letter)
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  availableAt   DateTime  @default(now()) // not claimable before this (retry backoff)
+  lockedUntil   DateTime? // lease: a crashed dispatcher's rows become claimable again after this
+  lastError     String?
   createdAt     DateTime  @default(now())
   publishedAt   DateTime?
 
-  @@index([status])
+  @@index([status, availableAt])
+  @@index([aggregateType, aggregateId])
   @@map("outbox_events")
 }
 
@@ -481,6 +487,8 @@ model Notification {
   payload        Json
   sentAt         DateTime?
   createdAt      DateTime           @default(now())
+  // "<outboxEventId>:<channel>" — makes re-delivery of the same event a no-op instead of a duplicate email
+  dedupeKey      String?            @unique
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
