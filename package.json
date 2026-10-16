@@ -12,6 +12,7 @@
     "generate": "prisma generate",
     "studio": "prisma studio",
     "seed": "node prisma/seed.js",
+    "permissions:sync": "node scripts/sync-permissions.js",
     "test": "node --test test/**/*.test.js",
     "worker": "node src/worker.js",
     "dev:worker": "nodemon src/worker.js"

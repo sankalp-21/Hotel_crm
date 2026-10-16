@@ -42,4 +42,32 @@ function authRateLimiter() {
   });
 }
 
-module.exports = { globalRateLimiter, authRateLimiter };
+/** Unauthenticated public endpoints (unsubscribe). Per-IP, deliberately tighter than the global limit. */
+function publicRateLimiter() {
+  return rateLimit({
+    windowMs: env.AUTH_RATE_LIMIT_WINDOW_MS,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: createRedisStore('rl:public:'),
+    message: {
+      error: { code: 'RATE_LIMITED', message: 'Too many requests. Please try again later.' },
+    },
+  });
+}
+
+/** Provider webhooks can burst (a big campaign's bounces arrive together), so this is generous. */
+function webhookRateLimiter() {
+  return rateLimit({
+    windowMs: env.AUTH_RATE_LIMIT_WINDOW_MS,
+    max: 5000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: createRedisStore('rl:webhook:'),
+    message: {
+      error: { code: 'RATE_LIMITED', message: 'Too many requests. Please try again later.' },
+    },
+  });
+}
+
+module.exports = { globalRateLimiter, authRateLimiter, publicRateLimiter, webhookRateLimiter };

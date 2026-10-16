@@ -2,7 +2,17 @@ const { z } = require('zod');
 
 const contactStatusEnum = z.enum(['lead', 'customer', 'inactive']);
 
-const createContactSchema = z.object({
+const consentRule = (data, ctx) => {
+  if (data.marketingConsent === true && !data.consentSource) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'consentSource is required when marketingConsent is true (where/how consent was given)',
+      path: ['consentSource'],
+    });
+  }
+};
+
+const contactBaseSchema = z.object({
   propertyId: z.string().uuid(),
   companyId: z.string().uuid().nullable().optional(),
   fullName: z.string().min(1),
@@ -14,9 +24,16 @@ const createContactSchema = z.object({
   status: contactStatusEnum.optional(),
   tags: z.array(z.string().min(1)).optional(),
   preferences: z.record(z.unknown()).optional(),
+  // Consent is recorded explicitly. unsubscribedAt / emailBounced are system-owned and not accepted here.
+  marketingConsent: z.boolean().optional(),
+  consentSource: z.string().trim().min(1).max(100).optional(),
 });
 
-const updateContactSchema = createContactSchema.partial().omit({ propertyId: true });
+const createContactSchema = contactBaseSchema.superRefine(consentRule);
+const updateContactSchema = contactBaseSchema
+  .partial()
+  .omit({ propertyId: true })
+  .superRefine(consentRule);
 
 const searchContactSchema = z.object({
   search: z.string().optional(),

@@ -4,6 +4,7 @@ const {
   createCampaignSchema,
   updateCampaignSchema,
   searchCampaignSchema,
+  recipientsQuerySchema,
 } = require('./validator');
 const { validate } = require('../../shared/validation/validate');
 const { authenticate } = require('../../shared/middleware/authenticate');
@@ -45,6 +46,22 @@ router.post(
   requirePermission(PERMISSIONS.CAMPAIGNS_SEND),
   idempotent({ required: true }),
   asyncHandler(controller.send)
+);
+
+router.post('/:id/cancel', requirePermission(PERMISSIONS.CAMPAIGNS_SEND), asyncHandler(controller.cancel));
+
+router.post(
+  '/:id/retry-failed',
+  requirePermission(PERMISSIONS.CAMPAIGNS_SEND),
+  idempotent({ required: true }),
+  asyncHandler(controller.retryFailed)
+);
+
+router.get(
+  '/:id/recipients',
+  validate(recipientsQuerySchema, 'query'),
+  requirePermission(PERMISSIONS.CAMPAIGNS_READ),
+  asyncHandler(controller.recipients)
 );
 
 module.exports = router;

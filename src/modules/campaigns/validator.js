@@ -31,12 +31,19 @@ const updateCampaignSchema = z
 
 const searchCampaignSchema = z.object({
   search: z.string().optional(),
-  status: z.enum(['draft', 'sending', 'sent', 'failed']).optional(),
+  status: z.enum(['draft', 'sending', 'sent', 'failed', 'cancelled']).optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
 });
 
+const recipientsQuerySchema = z.object({
+  status: z.enum(['queued', 'sending', 'sent', 'skipped', 'failed']).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(200).default(50),
+});
+
 module.exports = {
+  recipientsQuerySchema,
   createCampaignSchema,
   updateCampaignSchema,
   searchCampaignSchema,

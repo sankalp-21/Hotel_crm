@@ -27,7 +27,22 @@ async function update(req, res) {
 
 async function send(req, res) {
   const campaign = await campaignsService.sendCampaign(req.params.id, req.propertyId, req.user);
+  res.status(202).json(campaign); // accepted: workers send in the background; poll GET /campaigns/:id
+}
+
+async function cancel(req, res) {
+  const campaign = await campaignsService.cancelCampaign(req.params.id, req.propertyId, req.user);
   res.json(campaign);
 }
 
-module.exports = { create, getOne, search, update, send };
+async function retryFailed(req, res) {
+  const campaign = await campaignsService.retryFailed(req.params.id, req.propertyId, req.user);
+  res.status(202).json(campaign);
+}
+
+async function recipients(req, res) {
+  const result = await campaignsService.listRecipients(req.params.id, req.propertyId, req.query);
+  res.json(result);
+}
+
+module.exports = { create, getOne, search, update, send, cancel, retryFailed, recipients };

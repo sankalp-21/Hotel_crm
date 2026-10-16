@@ -33,9 +33,15 @@ async function drainOutbox() {
   if (result.claimed > 0) logger.info(result, 'outbox:dispatched');
 }
 
+// Loaded lazily so the sender (and its DB/Redis clients) only comes into play when the job runs.
+async function sendCampaigns() {
+  await require('../modules/campaigns/sender').runCampaignSends();
+}
+
 const jobs = [
   createJob({ name: 'outbox-dispatch', intervalMs: 2_000, run: drainOutbox }),
   createJob({ name: 'reminder-sweep', intervalMs: 15_000, run: sweepReminders }),
+  createJob({ name: 'campaign-send', intervalMs: 3_000, run: sendCampaigns }),
   createJob({ name: 'housekeeping', intervalMs: 60 * 60 * 1000, run: housekeeping }),
 ];
 
@@ -53,4 +59,4 @@ async function stopBackgroundJobs() {
   await Promise.all(jobs.map((job) => job.stop()));
 }
 
-module.exports = { startBackgroundJobs, stopBackgroundJobs, sweepReminders, housekeeping, drainOutbox };
+module.exports = { startBackgroundJobs, stopBackgroundJobs, sweepReminders, housekeeping, drainOutbox, sendCampaigns };

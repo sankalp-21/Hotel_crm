@@ -127,9 +127,13 @@ async function main() {
       companyId,
       source: 'website',
       tags: [tag],
+      // Campaigns only reach contacts with recorded marketing consent.
+      marketingConsent: true,
+      consentSource: 'smoke_test',
     },
   });
   check('create contact 201', r.status === 201, r);
+  check('contact consent recorded', r.json?.marketingConsent === true && r.json?.consentSource === 'smoke_test' && Boolean(r.json?.consentUpdatedAt), r.json);
   const contactId = r.json?.id;
 
   r = await call('GET', `/contacts?search=${encodeURIComponent(`Smoke Tester ${run}`)}`, { token: t });
@@ -192,6 +196,41 @@ async function main() {
   r = await call('POST', `/activities/${activityId}/complete`, { token: t });
   check('complete activity', r.status === 200 && r.json?.status === 'completed', r);
 
+  r = await call('PATCH', `/properties/${PROPERTY_ID}`, { token: t, body: { address: '1 Smoke Street, Test City, 00000' } });
+  check('set property postal address (needed for campaign footer)', r.status === 200, r);
+
+  section('Suppression list');
+  const suppressed = `suppressed-${run}@example.com`;
+  r = await call('POST', '/suppressions', { token: t, body: { propertyId: PROPERTY_ID, channel: 'email', address: suppressed.toUpperCase() } });
+  check('add suppression 201 (normalised to lower-case)', r.status === 201 && r.json?.address === suppressed && r.json?.reason === 'manual', r);
+  const suppressionId = r.json?.id;
+  r = await call('POST', '/suppressions', { token: t, body: { propertyId: PROPERTY_ID, channel: 'email', address: suppressed } });
+  check('adding the same address again is idempotent (200, same id)', r.status === 200 && r.json?.id === suppressionId, r);
+  r = await call('GET', `/suppressions?search=${encodeURIComponent(suppressed)}`, { token: t });
+  check('list suppressions finds it', r.status === 200 && r.json?.total === 1, r.json);
+  r = await call('DELETE', `/suppressions/${suppressionId}`, { token: t });
+  check('remove manual suppression 204', r.status === 204, r);
+
+  section('Sender identity & delivery events');
+  r = await call('GET', `/properties/${PROPERTY_ID}/sender`, { token: t });
+  check('GET sender settings 200 with a delivery webhook URL', r.status === 200 && /\/public\/delivery-events\/.+\?sig=/.test(r.json?.deliveryWebhookUrl || ''), r.json);
+  const hook = new URL(r.json?.deliveryWebhookUrl || 'http://x/');
+  r = await call('PATCH', `/properties/${PROPERTY_ID}/sender`, { token: t, body: { emailFromName: 'Demo Hotel Reservations', emailReplyTo: `frontdesk-${run}@example.com` } });
+  check('PATCH sender name + reply-to 200', r.status === 200 && r.json?.emailReplyTo === `frontdesk-${run}@example.com`, r);
+  r = await call('PATCH', `/properties/${PROPERTY_ID}/sender`, { token: t, body: { emailFromName: 'Evil\r\nBcc: x@y.com' } });
+  check('from-name with line break rejected (422)', r.status === 422, r);
+
+  const bouncing = `bounced-${run}@example.com`;
+  const hookBody = { events: [{ type: 'bounce', bounceType: 'hard', address: bouncing, reason: 'smoke test' }] };
+  let hr = await fetch(`${BASE}${hook.pathname}?sig=${'0'.repeat(64)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(hookBody) });
+  check('delivery webhook with wrong signature -> 401', hr.status === 401, hr.status);
+  hr = await fetch(`${BASE}${hook.pathname}${hook.search}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(hookBody) });
+  check('delivery webhook with valid signature -> 200', hr.status === 200, hr.status);
+  r = await call('GET', `/suppressions?search=${encodeURIComponent(bouncing)}`, { token: t });
+  check('bounced address is on the suppression list (reason bounced)', r.status === 200 && r.json?.items?.[0]?.reason === 'bounced', r.json);
+  r = await call('DELETE', `/suppressions/${r.json?.items?.[0]?.id}`, { token: t });
+  check('staff cannot remove a bounce suppression (409)', r.status === 409, r);
+
   section('Segments & campaigns');
   r = await call('POST', '/segments', { token: t, body: { propertyId: PROPERTY_ID, name: `Smoke seg ${run}`, filters: { tags: [tag], hasEmail: true } } });
   check('create segment 201', r.status === 201, r);
@@ -210,11 +249,25 @@ async function main() {
   check('send without Idempotency-Key -> 422', r.status === 422, r);
   const idemKey = `smoke-send-${run}`;
   r = await call('POST', `/campaigns/${campaignId}/send`, { token: t, headers: { 'Idempotency-Key': idemKey } });
-  check('send campaign 200', r.status === 200, r);
-  check('campaign status sent, 1 recipient sent', r.json?.status === 'sent' && r.json?.sentCount === 1 && r.json?.totalRecipients === 1, r.json && { status: r.json.status, sentCount: r.json.sentCount, total: r.json.totalRecipients, failed: r.json.failedCount });
+  check('send campaign 202 (accepted, sends in the background)', r.status === 202 && r.json?.status === 'sending', r);
   const firstBody = r.json;
   r = await call('POST', `/campaigns/${campaignId}/send`, { token: t, headers: { 'Idempotency-Key': idemKey } });
-  check('same Idempotency-Key replays stored response', r.status === 200 && r.json?.id === firstBody?.id, r);
+  check('same Idempotency-Key replays stored response', r.status === 202 && r.json?.id === firstBody?.id, r);
+
+  // The background worker (RUN_WORKERS_IN_API, default on) does the sending: poll until it finishes.
+  let finished = null;
+  for (let i = 0; i < 40 && !finished; i += 1) {
+    await new Promise((res) => setTimeout(res, 1500));
+    const poll = await call('GET', `/campaigns/${campaignId}`, { token: t });
+    if (poll.json && poll.json.status !== 'sending') finished = poll.json;
+  }
+  check('campaign finishes: status sent, 1 recipient sent', finished?.status === 'sent' && finished?.sentCount === 1 && finished?.totalRecipients === 1, finished && { status: finished.status, sentCount: finished.sentCount, total: finished.totalRecipients, failed: finished.failedCount, halt: finished.haltReason });
+  r = await call('GET', `/campaigns/${campaignId}/recipients?status=sent`, { token: t });
+  check('recipients endpoint is paginated and shows the sent recipient', r.status === 200 && r.json?.total === 1 && r.json?.items?.[0]?.status === 'sent', r.json);
+  r = await call('POST', `/campaigns/${campaignId}/cancel`, { token: t });
+  check('cancel on a finished campaign -> 409', r.status === 409, r);
+  r = await call('POST', `/campaigns/${campaignId}/retry-failed`, { token: t, headers: { 'Idempotency-Key': `${idemKey}-retry` } });
+  check('retry-failed with nothing failed -> 409', r.status === 409, r);
   r = await call('POST', `/campaigns/${campaignId}/send`, { token: t, headers: { 'Idempotency-Key': `${idemKey}-2` } });
   check('re-send with new key -> 409 (already sent)', r.status === 409, r);
 

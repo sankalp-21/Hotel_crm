@@ -1,4 +1,5 @@
 const propertyService = require('./service');
+const senderSettings = require('./senderSettings');
 
 async function create(req, res) {
   const property = await propertyService.createProperty(req.body, req.user);
@@ -20,4 +21,12 @@ async function update(req, res) {
   res.json(property);
 }
 
-module.exports = { create, getOne, list, update };
+async function getSender(req, res) {
+  res.json(await senderSettings.getSenderSettings(req.params.id));
+}
+
+async function updateSender(req, res) {
+  res.json(await senderSettings.updateSenderSettings(req.params.id, req.body, req.user));
+}
+
+module.exports = { create, getOne, list, update, getSender, updateSender };

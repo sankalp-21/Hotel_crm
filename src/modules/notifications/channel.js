@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const parseAddresses = require('nodemailer/lib/addressparser');
 const env = require('../../config/env');
 const logger = require('../../config/logger');
 
@@ -26,13 +27,19 @@ function getTransporter() {
   return transporter;
 }
 
+/** The server-wide default sender parsed from EMAIL_FROM ("Name <a@b.com>" or "a@b.com"). */
+function globalFrom() {
+  const [parsed] = parseAddresses(env.EMAIL_FROM || '');
+  return parsed ? { name: parsed.name || '', address: parsed.address } : { name: '', address: '' };
+}
+
 /**
  * Email/SMS delivery adapter.
  * - Production email: requires SMTP_* + EMAIL_FROM; fails closed if missing.
  * - Development email without SMTP: logs a stub (never claim production delivery).
  * - SMS: not wired yet — fails in production, stubs in development.
  */
-async function send({ to, subject, body, channel = 'email' }) {
+async function send({ to, subject, body, html, headers, from, replyTo, channel = 'email' }) {
   if (channel === 'sms') {
     if (env.NODE_ENV === 'production') {
       throw new Error('SMS provider is not configured');
@@ -50,15 +57,18 @@ async function send({ to, subject, body, channel = 'email' }) {
   }
 
   const mailer = getTransporter();
-  await mailer.sendMail({
-    from: env.EMAIL_FROM,
+  const info = await mailer.sendMail({
+    from: from || env.EMAIL_FROM,
+    ...(replyTo && { replyTo }),
     to,
     subject: subject || '(no subject)',
     text: body,
+    ...(html && { html }),
+    ...(headers && { headers }),
   });
 
   logger.info({ to, subject }, 'notifications:email_sent');
-  return { success: true, provider: 'smtp' };
+  return { success: true, provider: 'smtp', messageId: info?.messageId };
 }
 
-module.exports = { send };
+module.exports = { send, globalFrom };

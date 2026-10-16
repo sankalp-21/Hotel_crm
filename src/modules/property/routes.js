@@ -1,6 +1,6 @@
 const express = require('express');
 const controller = require('./controller');
-const { createPropertySchema, updatePropertySchema } = require('./validator');
+const { createPropertySchema, updatePropertySchema, senderSettingsSchema } = require('./validator');
 const { validate } = require('../../shared/validation/validate');
 const { authenticate } = require('../../shared/middleware/authenticate');
 const { requirePermission, requirePlatformAdmin } = require('../../shared/middleware/rbac');
@@ -30,6 +30,27 @@ router.patch(
   },
   requirePermission(PERMISSIONS.PROPERTY_MANAGE),
   asyncHandler(controller.update)
+);
+
+// Campaign sender identity + the hotel's delivery-event webhook URL (a secret: manager-only).
+const asPropertyContext = (req, res, next) => {
+  req.propertyId = req.params.id;
+  next();
+};
+router.get(
+  '/:id/sender',
+  authenticate,
+  asPropertyContext,
+  requirePermission(PERMISSIONS.PROPERTY_MANAGE),
+  asyncHandler(controller.getSender)
+);
+router.patch(
+  '/:id/sender',
+  authenticate,
+  validate(senderSettingsSchema),
+  asPropertyContext,
+  requirePermission(PERMISSIONS.PROPERTY_MANAGE),
+  asyncHandler(controller.updateSender)
 );
 
 module.exports = router;
