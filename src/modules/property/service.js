@@ -4,7 +4,7 @@ const { NotFoundError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 
 async function createProperty(data, actingUser) {
-  const property = await propertyRepository.create(data);
+  const property = await propertyRepository.createWithOwner(data, actingUser.id);
   await pipelinesRepository.ensureDefaults(property.id);
   await logAudit({
     propertyId: property.id,

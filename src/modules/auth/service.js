@@ -10,8 +10,10 @@ const {
 const {
   UnauthorizedError,
   ConflictError,
+  ValidationError,
   TooManyRequestsError,
 } = require('../../shared/errors/AppError');
+const { assertCanAssignRole, filterAssignableRoles } = require('./roleAssignment');
 const { logAudit } = require('../audit/service');
 const env = require('../../config/env');
 const redis = require('../../infrastructure/redis/redis');
@@ -137,24 +139,94 @@ async function logout({ refreshToken }) {
  * are provisioned by a property manager/admin.)
  */
 async function createUser({ email, password, fullName, propertyId, roleId }, actingUser) {
+  if (!actingUser) throw new UnauthorizedError();
+
+  // Authorization first: the acting user may only grant roles whose permissions
+  // they already hold at this property (and never super_admin unless they are one).
+  const [role, actor] = await Promise.all([
+    authRepository.getRoleWithPermissions(roleId),
+    authRepository.getActorAccess(actingUser.id, propertyId),
+  ]);
+  assertCanAssignRole({ actor, role });
+
   const existing = await authRepository.findByEmail(email);
   if (existing) {
     throw new ConflictError('A user with this email already exists');
   }
 
   const passwordHash = await hashPassword(password);
-  const user = await authRepository.createUser({ email, passwordHash, fullName });
-  await authRepository.assignPropertyRole({ userId: user.id, propertyId, roleId });
+
+  let user;
+  try {
+    user = await authRepository.createUserWithRole({
+      email,
+      passwordHash,
+      fullName,
+      propertyId,
+      roleId,
+    });
+  } catch (err) {
+    // Lost a race with a concurrent create for the same email.
+    if (err.code === 'P2002') throw new ConflictError('A user with this email already exists');
+    throw err;
+  }
 
   await logAudit({
     propertyId,
-    userId: actingUser?.id,
+    userId: actingUser.id,
     action: 'auth.user_created',
     entityType: 'User',
     entityId: user.id,
+    metadata: { roleId: role.id, roleName: role.name },
   });
 
   return { id: user.id, email: user.email, fullName: user.fullName };
 }
 
-module.exports = { login, refresh, logout, createUser };
+/**
+ * Change the signed-in user's own password. Wrong attempts count toward the same lockout as
+ * login (so this can't be used to brute-force the current password), and success revokes every
+ * refresh token so other devices must sign in again with the new password. (Access tokens
+ * already issued stay valid until they expire, at most JWT_ACCESS_EXPIRES_IN.)
+ *
+ * A wrong current password is a 422, not a 401: clients commonly treat 401 as "session expired".
+ */
+async function changePassword(actingUser, { currentPassword, newPassword }) {
+  await assertNotLockedOut(actingUser.email);
+
+  const user = await authRepository.findById(actingUser.id);
+  if (!user || !user.isActive) throw new UnauthorizedError();
+
+  const valid = await verifyPassword(currentPassword, user.passwordHash);
+  if (!valid) {
+    await recordFailedLogin(user.email);
+    throw new ValidationError('Current password is incorrect');
+  }
+
+  await authRepository.updatePasswordHash(user.id, await hashPassword(newPassword));
+  await authRepository.revokeAllRefreshTokensForUser(user.id);
+  await clearFailedLogin(user.email);
+
+  await logAudit({
+    userId: user.id,
+    action: 'auth.password_changed',
+    entityType: 'User',
+    entityId: user.id,
+  });
+}
+
+/** Roles the acting user may assign at this property (used to populate pickers). */
+async function listAssignableRoles(propertyId, actingUser) {
+  const [roles, actor] = await Promise.all([
+    authRepository.listRolesWithPermissions(),
+    authRepository.getActorAccess(actingUser.id, propertyId),
+  ]);
+  return filterAssignableRoles(actor, roles).map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    permissions: r.permissionCodes,
+  }));
+}
+
+module.exports = { login, refresh, logout, createUser, changePassword, listAssignableRoles };

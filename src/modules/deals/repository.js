@@ -6,12 +6,12 @@ const dealInclude = {
   company: { select: { id: true, name: true, type: true, email: true } },
 };
 
-function create(data) {
-  return prisma.deal.create({ data, include: dealInclude });
+function create(data, db = prisma) {
+  return db.deal.create({ data, include: dealInclude });
 }
 
-function findById(id) {
-  return prisma.deal.findUnique({ where: { id }, include: dealInclude });
+function findById(id, propertyId) {
+  return prisma.deal.findFirst({ where: { id, propertyId }, include: dealInclude });
 }
 
 function search({ propertyId, search, stageId, contactId, companyId, outcome, page, pageSize }) {
@@ -44,8 +44,8 @@ function search({ propertyId, search, stageId, contactId, companyId, outcome, pa
   ]);
 }
 
-function update(id, data) {
-  return prisma.deal.update({ where: { id }, data, include: dealInclude });
+function update(id, propertyId, data, db = prisma) {
+  return db.deal.update({ where: { id, propertyId }, data, include: dealInclude });
 }
 
 module.exports = { create, findById, search, update };

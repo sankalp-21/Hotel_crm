@@ -1,42 +1,46 @@
-const bus = require('../../shared/events/bus');
+const { publish } = require('../../shared/events/outbox');
 
-function emitActivityCreated(activity) {
-  bus.emitEvent('activity.created', {
-    activityId: activity.id,
-    propertyId: activity.propertyId,
-    contactId: activity.contactId,
-    dealId: activity.dealId,
-    type: activity.type,
+/** Record activity events in the outbox using the caller's transaction client. */
+const base = (activity) => ({
+  activityId: activity.id,
+  propertyId: activity.propertyId,
+  contactId: activity.contactId,
+  dealId: activity.dealId,
+  type: activity.type,
+});
+
+function recordActivityCreated(db, activity) {
+  return publish(db, {
+    aggregateType: 'Activity',
+    aggregateId: activity.id,
+    eventType: 'activity.created',
+    payload: base(activity),
   });
 }
 
-function emitActivityCompleted(activity) {
-  bus.emitEvent('activity.completed', {
-    activityId: activity.id,
-    propertyId: activity.propertyId,
-    contactId: activity.contactId,
-    dealId: activity.dealId,
-    type: activity.type,
+function recordActivityCompleted(db, activity) {
+  return publish(db, {
+    aggregateType: 'Activity',
+    aggregateId: activity.id,
+    eventType: 'activity.completed',
+    payload: base(activity),
   });
 }
 
-function emitActivityReminderDue(activity) {
-  bus.emitEvent('activity.reminder_due', {
-    activityId: activity.id,
-    propertyId: activity.propertyId,
-    contactId: activity.contactId,
-    dealId: activity.dealId,
-    type: activity.type,
-    subject: activity.subject,
-    dueAt: activity.dueAt,
-    reminderAt: activity.reminderAt,
-    assignedTo: activity.assignedTo,
-    createdBy: activity.createdBy,
+function recordActivityReminderDue(db, activity) {
+  return publish(db, {
+    aggregateType: 'Activity',
+    aggregateId: activity.id,
+    eventType: 'activity.reminder_due',
+    payload: {
+      ...base(activity),
+      subject: activity.subject,
+      dueAt: activity.dueAt,
+      reminderAt: activity.reminderAt,
+      assignedTo: activity.assignedTo,
+      createdBy: activity.createdBy,
+    },
   });
 }
 
-module.exports = {
-  emitActivityCreated,
-  emitActivityCompleted,
-  emitActivityReminderDue,
-};
+module.exports = { recordActivityCreated, recordActivityCompleted, recordActivityReminderDue };

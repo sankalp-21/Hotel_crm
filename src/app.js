@@ -1,17 +1,18 @@
-const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const pinoHttp = require('pino-http');
 
 const env = require('./config/env');
 const logger = require('./config/logger');
+const { createHttpLogger } = require('./config/httpLogger');
 const prisma = require('./infrastructure/db/prisma');
 const redis = require('./infrastructure/redis/redis');
 const { errorHandler, notFoundHandler } = require('./shared/errors/errorHandler');
 const { globalRateLimiter } = require('./shared/middleware/rateLimit');
 
 const authRoutes = require('./modules/auth/routes');
+const usersRoutes = require('./modules/users/routes');
+const platformRoutes = require('./modules/platform/routes');
 const propertyRoutes = require('./modules/property/routes');
 const contactsRoutes = require('./modules/contacts/routes');
 const companiesRoutes = require('./modules/companies/routes');
@@ -20,6 +21,9 @@ const dealsRoutes = require('./modules/deals/routes');
 const activitiesRoutes = require('./modules/activities/routes');
 const segmentsRoutes = require('./modules/segments/routes');
 const campaignsRoutes = require('./modules/campaigns/routes');
+const deliveriesRoutes = require('./modules/deliveries/routes');
+const unsubscribeRoutes = require('./modules/unsubscribe/routes');
+const suppressionsRoutes = require('./modules/suppressions/routes');
 const reportsRoutes = require('./modules/reports/routes');
 const auditRoutes = require('./modules/audit/routes');
 const notificationsRoutes = require('./modules/notifications/routes');
@@ -51,17 +55,7 @@ function createApp() {
   app.use(cors(corsOptions));
 
   app.use(express.json({ limit: '1mb' }));
-  app.use(
-    pinoHttp({
-      logger,
-      genReqId(req, res) {
-        const existing = req.headers['x-request-id'];
-        const id = typeof existing === 'string' && existing ? existing : crypto.randomUUID();
-        res.setHeader('X-Request-Id', id);
-        return id;
-      },
-    })
-  );
+  app.use(createHttpLogger(logger));
 
   app.use(globalRateLimiter());
 
@@ -93,6 +87,8 @@ function createApp() {
   });
 
   app.use('/auth', authRoutes);
+  app.use('/users', usersRoutes);
+  app.use('/platform', platformRoutes);
   app.use('/properties', propertyRoutes);
   app.use('/contacts', contactsRoutes);
   app.use('/companies', companiesRoutes);
@@ -101,6 +97,9 @@ function createApp() {
   app.use('/activities', activitiesRoutes);
   app.use('/segments', segmentsRoutes);
   app.use('/campaigns', campaignsRoutes);
+  app.use('/public/unsubscribe', unsubscribeRoutes);
+  app.use('/public/delivery-events', deliveriesRoutes);
+  app.use('/suppressions', suppressionsRoutes);
   app.use('/reports', reportsRoutes);
   app.use('/audit-logs', auditRoutes);
   app.use('/notifications', notificationsRoutes);

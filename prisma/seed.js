@@ -2,7 +2,7 @@
 require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcrypt');
-const { PERMISSIONS, ROLE_PERMISSION_DEFAULTS } = require('../src/modules/auth/permissions');
+const { syncPermissions } = require('../src/modules/auth/syncPermissions');
 
 const prisma = new PrismaClient();
 
@@ -13,34 +13,12 @@ async function main() {
     );
   }
 
-  console.log('Seeding permissions...');
-  const permissionRecords = {};
-  for (const code of Object.values(PERMISSIONS)) {
-    permissionRecords[code] = await prisma.permission.upsert({
-      where: { code },
-      update: {},
-      create: { code },
-    });
-  }
-
-  console.log('Seeding roles...');
-  const roleRecords = {};
-  for (const [roleName, permissionCodes] of Object.entries(ROLE_PERMISSION_DEFAULTS)) {
-    const role = await prisma.role.upsert({
-      where: { name: roleName },
-      update: {},
-      create: { name: roleName },
-    });
-    roleRecords[roleName] = role;
-
-    for (const code of permissionCodes) {
-      await prisma.rolePermission.upsert({
-        where: { roleId_permissionId: { roleId: role.id, permissionId: permissionRecords[code].id } },
-        update: {},
-        create: { roleId: role.id, permissionId: permissionRecords[code].id },
-      });
-    }
-  }
+  console.log('Syncing permissions and roles...');
+  const synced = await syncPermissions(prisma);
+  console.log(
+    `  +${synced.permissionsAdded.length} permissions, +${synced.rolesAdded.length} roles, +${synced.grantsAdded.length} grants`
+  );
+  const superAdminRole = await prisma.role.findUnique({ where: { name: 'super_admin' } });
 
   console.log('Seeding default property...');
   const property = await prisma.property.upsert({
@@ -49,6 +27,7 @@ async function main() {
     create: {
       id: '00000000-0000-0000-0000-000000000001',
       name: 'Demo Hotel',
+      address: '1 Demo Street, Demo City, 00000', // required in marketing email footers (CAN-SPAM)
       currency: 'USD',
       timezone: 'UTC',
     },
@@ -70,8 +49,8 @@ async function main() {
 
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
-    update: {},
-    create: { email: adminEmail, passwordHash, fullName: 'Super Admin' },
+    update: { isPlatformAdmin: true },
+    create: { email: adminEmail, passwordHash, fullName: 'Super Admin', isPlatformAdmin: true },
   });
 
   await prisma.userPropertyRole.upsert({
@@ -79,11 +58,11 @@ async function main() {
       userId_propertyId_roleId: {
         userId: admin.id,
         propertyId: property.id,
-        roleId: roleRecords.super_admin.id,
+        roleId: superAdminRole.id,
       },
     },
     update: {},
-    create: { userId: admin.id, propertyId: property.id, roleId: roleRecords.super_admin.id },
+    create: { userId: admin.id, propertyId: property.id, roleId: superAdminRole.id },
   });
 
   console.log('Seed complete.');

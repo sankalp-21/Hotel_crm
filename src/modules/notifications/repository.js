@@ -4,6 +4,24 @@ function createNotificationRecord(data) {
   return prisma.notification.create({ data });
 }
 
+function findByDedupeKey(dedupeKey) {
+  return prisma.notification.findUnique({ where: { dedupeKey } });
+}
+
+/**
+ * Create or update the single notification row for an outbox delivery. Retries of the same event
+ * update the row in place (queued -> failed -> sent) instead of piling up duplicates.
+ */
+function saveNotification(data) {
+  if (!data.dedupeKey) return prisma.notification.create({ data });
+  const { dedupeKey, ...mutable } = data;
+  return prisma.notification.upsert({
+    where: { dedupeKey },
+    create: data,
+    update: mutable,
+  });
+}
+
 function listByProperty(propertyId, { page = 1, pageSize = 20 } = {}) {
   const where = { propertyId };
   return Promise.all([
@@ -39,6 +57,7 @@ async function resolveActivityReminderDue({ activityId, assignedTo, createdBy })
     include: {
       contact: { select: { id: true, fullName: true, email: true } },
       deal: { select: { id: true, title: true } },
+      property: { select: { timezone: true } },
     },
   });
   if (!activity) return null;
@@ -47,7 +66,15 @@ async function resolveActivityReminderDue({ activityId, assignedTo, createdBy })
   if (!recipientUserId) return null;
 
   const user = await prisma.user.findUnique({ where: { id: recipientUserId } });
-  if (!user?.email) return null;
+  if (!user?.email || !user.isActive) return null;
+
+  // Defence in depth: never email an activity's details to someone who has no
+  // access to the activity's property, whatever the row says.
+  const access = await prisma.userPropertyRole.findFirst({
+    where: { userId: user.id, propertyId: activity.propertyId },
+    select: { id: true },
+  });
+  if (!access) return null;
 
   return {
     propertyId: activity.propertyId,
@@ -60,6 +87,7 @@ async function resolveActivityReminderDue({ activityId, assignedTo, createdBy })
     subject: activity.subject,
     dueAt: activity.dueAt,
     reminderAt: activity.reminderAt,
+    timezone: activity.property?.timezone ?? 'UTC',
     contactName: activity.contact?.fullName ?? null,
     dealTitle: activity.deal?.title ?? null,
   };
@@ -67,6 +95,8 @@ async function resolveActivityReminderDue({ activityId, assignedTo, createdBy })
 
 module.exports = {
   createNotificationRecord,
+  findByDedupeKey,
+  saveNotification,
   listByProperty,
   listByContact,
   resolveActivityReminderDue,

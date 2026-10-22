@@ -15,15 +15,19 @@ datasource db {
 // ─────────────────────────────────────────────
 
 model IdempotencyKey {
-  id           String   @id @default(uuid())
-  key          String   @unique
+  id           String    @id @default(uuid())
+  scope        String // "<userId>:<propertyId>" — keys are private to the caller and tenant
+  key          String
   requestHash  String
   statusCode   Int?
   responseBody Json?
-  status       String   @default("in_progress") // in_progress | completed
-  createdAt    DateTime @default(now())
+  status       String    @default("in_progress") // in_progress | completed
+  createdAt    DateTime  @default(now())
   completedAt  DateTime?
+  expiresAt    DateTime // completed: replay TTL; in_progress: lease after which a crashed request is reclaimable
 
+  @@unique([scope, key])
+  @@index([expiresAt])
   @@map("idempotency_keys")
 }
 
@@ -37,6 +41,9 @@ model User {
   passwordHash String
   fullName     String
   isActive     Boolean  @default(true)
+  // Platform operator (can create properties, manage accounts across tenants).
+  // Deliberately NOT a role: tenant roles only ever grant power inside one property.
+  isPlatformAdmin Boolean @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -116,6 +123,13 @@ model Property {
   timezone  String   @default("UTC")
   currency  String   @default("USD")
   isActive  Boolean  @default(true)
+  // Max campaign messages per second for this hotel; null = server default (CAMPAIGN_SEND_RATE_PER_SEC)
+  campaignSendRatePerSec Int?
+
+  // Sender identity for campaign email (Phase 3.4). Null = fall back to the hotel name / global EMAIL_FROM.
+  emailFromName    String?
+  emailFromAddress String? // must be on a domain in EMAIL_ALLOWED_FROM_DOMAINS
+  emailReplyTo     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -127,6 +141,7 @@ model Property {
   activities      Activity[]
   segments        Segment[]
   campaigns       Campaign[]
+  suppressions    SuppressionEntry[]
   auditLogs       AuditLog[]
   notifications   Notification[]
   retentionPolicy RetentionPolicy?
@@ -189,6 +204,14 @@ model Contact {
   status       ContactStatus @default(lead)
   tags         String[]      @default([])
   preferences  Json?
+
+  // Marketing consent (Phase 3.1). Default false: nobody is emailed until consent is recorded.
+  marketingConsent  Boolean   @default(false)
+  consentSource     String? // where consent was given/revoked: signup_form | front_desk | event | import | ...
+  consentUpdatedAt  DateTime?
+  unsubscribedAt    DateTime? // set only by the contact's own unsubscribe; staff cannot re-grant over it
+  emailBounced      Boolean   @default(false) // set by delivery tracking, never by the API
+
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -347,6 +370,7 @@ enum CampaignStatus {
   sending
   sent
   failed
+  cancelled
 }
 
 enum CampaignChannel {
@@ -356,9 +380,11 @@ enum CampaignChannel {
 
 enum CampaignRecipientStatus {
   queued
+  sending // claimed for delivery right now; a crash leaves at most one of these, resolved as failed "interrupted"
   sent
   skipped
   failed
+  bounced // address rejected the mail (at send time, or reported afterwards by the provider)
 }
 
 model Campaign {
@@ -375,11 +401,24 @@ model Campaign {
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  // Snapshot counts after send
+  // Counts, maintained incrementally while sending and reconciled from recipient rows at the end
   totalRecipients   Int @default(0)
   sentCount         Int @default(0)
   skippedCount      Int @default(0)
   failedCount       Int @default(0)
+  bouncedCount      Int @default(0) // address rejected the mail (synchronously or reported by the provider)
+  complainedCount   Int @default(0) // recipient marked it as spam
+
+  // Asynchronous sending (Phase 3.2). All progress lives in the database, so any worker can resume.
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  cancelledAt    DateTime?
+  preparedAt     DateTime? // set once every segment contact has a recipient row
+  prepareCursor  String? // last contact id turned into a recipient (stable paging by id)
+  lastProgressAt DateTime?
+  haltReason     String? // set when sending stopped itself (e.g. too many consecutive failures)
+  leaseOwner     String? // worker currently sending this campaign
+  leaseUntil     DateTime? // lease expiry; after it another worker may take over
 
   property   Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   segment    Segment             @relation(fields: [segmentId], references: [id])
@@ -387,6 +426,7 @@ model Campaign {
 
   @@index([propertyId, status])
   @@index([segmentId])
+  @@index([status, leaseUntil])
   @@map("campaigns")
 }
 
@@ -400,6 +440,11 @@ model CampaignRecipient {
   notificationId String?
   failureReason  String?
   sentAt         DateTime?
+  // Delivery tracking (Phase 3.3): filled in by provider events / send-time SMTP classification
+  providerMessageId String?
+  deliveredAt    DateTime?
+  bouncedAt      DateTime?
+  complainedAt   DateTime?
   createdAt      DateTime                 @default(now())
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -408,7 +453,35 @@ model CampaignRecipient {
   @@unique([campaignId, contactId])
   @@index([campaignId, status])
   @@index([contactId])
+  @@index([providerMessageId])
   @@map("campaign_recipients")
+}
+
+// ─────────────────────────────────────────────
+// Suppression list (Phase 3.1) — per property, per channel, keyed by address
+// ─────────────────────────────────────────────
+
+enum SuppressionReason {
+  manual
+  unsubscribed
+  bounced
+  complaint
+}
+
+model SuppressionEntry {
+  id         String            @id @default(uuid())
+  propertyId String
+  channel    CampaignChannel
+  address    String // normalised: trimmed + lower-cased (email) / trimmed (phone)
+  reason     SuppressionReason @default(manual)
+  createdBy  String?
+  createdAt  DateTime          @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, channel, address])
+  @@index([propertyId, createdAt])
+  @@map("suppression_entries")
 }
 
 // ─────────────────────────────────────────────
@@ -443,11 +516,17 @@ model OutboxEvent {
   aggregateId   String
   eventType     String
   payload       Json
-  status        String    @default("pending") // pending | published
+  // pending -> processing (leased by one dispatcher) -> published | back to pending (retry) | failed (dead letter)
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  availableAt   DateTime  @default(now()) // not claimable before this (retry backoff)
+  lockedUntil   DateTime? // lease: a crashed dispatcher's rows become claimable again after this
+  lastError     String?
   createdAt     DateTime  @default(now())
   publishedAt   DateTime?
 
-  @@index([status])
+  @@index([status, availableAt])
+  @@index([aggregateType, aggregateId])
   @@map("outbox_events")
 }
 
@@ -474,6 +553,8 @@ model Notification {
   payload        Json
   sentAt         DateTime?
   createdAt      DateTime           @default(now())
+  // "<outboxEventId>:<channel>" — makes re-delivery of the same event a no-op instead of a duplicate email
+  dedupeKey      String?            @unique
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 

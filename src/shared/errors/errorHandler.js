@@ -7,6 +7,11 @@ const { AppError } = require('./AppError');
  * Usage: router.post('/x', asyncHandler(controller.create))
  */
 function asyncHandler(fn) {
+  // Fail at startup, not on the first request: a route wired to a misspelled or missing
+  // controller function would otherwise register fine and only blow up when called.
+  if (typeof fn !== 'function') {
+    throw new TypeError('asyncHandler: route handler is not a function (check the controller export)');
+  }
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
@@ -24,6 +29,13 @@ function errorHandler(err, req, res, next) {
         message: err.message,
         details: err.details || undefined,
       },
+    });
+  }
+
+  // Prisma "record to update/delete not found" (e.g. a tenant-scoped write that matched no row).
+  if (err && err.code === 'P2025') {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: 'Resource not found' },
     });
   }
 

@@ -4,6 +4,23 @@ function create(data) {
   return prisma.property.create({ data });
 }
 
+/**
+ * Create a property and give its creator the super_admin role there, in one
+ * transaction. Without this the creator could create a tenant but had no
+ * access to it.
+ */
+function createWithOwner(data, ownerUserId) {
+  return prisma.$transaction(async (tx) => {
+    const role = await tx.role.findUnique({ where: { name: 'super_admin' } });
+    if (!role) throw new Error('super_admin role is not seeded; run npm run seed');
+    const property = await tx.property.create({ data });
+    await tx.userPropertyRole.create({
+      data: { userId: ownerUserId, propertyId: property.id, roleId: role.id },
+    });
+    return property;
+  });
+}
+
 function findById(id) {
   return prisma.property.findUnique({ where: { id } });
 }
@@ -44,4 +61,4 @@ function update(id, data) {
   return prisma.property.update({ where: { id }, data });
 }
 
-module.exports = { create, findById, findByIdForUser, list, listForUser, update };
+module.exports = { create, createWithOwner, findById, findByIdForUser, list, listForUser, update };

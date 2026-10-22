@@ -1,5 +1,5 @@
 const companiesRepository = require('./repository');
-const { NotFoundError, ForbiddenError } = require('../../shared/errors/AppError');
+const { NotFoundError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 
 async function createCompany(data, actingUser) {
@@ -18,11 +18,8 @@ async function createCompany(data, actingUser) {
 }
 
 async function getCompany(id, propertyId) {
-  const company = await companiesRepository.findById(id);
+  const company = await companiesRepository.findById(id, propertyId);
   if (!company) throw new NotFoundError('Company');
-  if (company.propertyId !== propertyId) {
-    throw new ForbiddenError('Company does not belong to this property');
-  }
   return company;
 }
 
@@ -42,7 +39,7 @@ async function updateCompany(id, propertyId, data, actingUser) {
   const payload = { ...data };
   if (payload.website === '') payload.website = null;
 
-  const company = await companiesRepository.update(id, payload);
+  const company = await companiesRepository.update(id, propertyId, payload);
   await logAudit({
     propertyId,
     userId: actingUser?.id,

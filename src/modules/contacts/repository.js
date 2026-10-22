@@ -11,9 +11,9 @@ function create(data) {
   });
 }
 
-function findById(id) {
-  return prisma.contact.findUnique({
-    where: { id },
+function findById(id, propertyId) {
+  return prisma.contact.findFirst({
+    where: { id, propertyId },
     include: { company: companySummary, documents: true },
   });
 }
@@ -46,9 +46,9 @@ function search({ propertyId, search, status, source, companyId, tag, page, page
   ]);
 }
 
-function update(id, data) {
+function update(id, propertyId, data) {
   return prisma.contact.update({
-    where: { id },
+    where: { id, propertyId },
     data,
     include: { company: companySummary, documents: true },
   });

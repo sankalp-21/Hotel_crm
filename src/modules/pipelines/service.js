@@ -1,5 +1,5 @@
 const pipelinesRepository = require('./repository');
-const { NotFoundError, ForbiddenError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
+const { NotFoundError, ValidationError, ConflictError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
 const prisma = require('../../infrastructure/db/prisma');
 
@@ -8,11 +8,8 @@ async function listStages(propertyId) {
 }
 
 async function getStage(id, propertyId) {
-  const stage = await pipelinesRepository.findById(id);
+  const stage = await pipelinesRepository.findById(id, propertyId);
   if (!stage) throw new NotFoundError('PipelineStage');
-  if (stage.propertyId !== propertyId) {
-    throw new ForbiddenError('Stage does not belong to this property');
-  }
   return stage;
 }
 
@@ -84,7 +81,7 @@ async function updateStage(id, propertyId, data, actingUser) {
       }
 
       return tx.pipelineStage.update({
-        where: { id },
+        where: { id, propertyId },
         data,
       });
     });

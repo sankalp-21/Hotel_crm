@@ -3,16 +3,20 @@ const logger = require('./config/logger');
 const createApp = require('./app');
 const prisma = require('./infrastructure/db/prisma');
 const redis = require('./infrastructure/redis/redis');
-const { registerNotificationListeners } = require('./modules/notifications/worker');
-const { startReminderSweep, stopReminderSweep } = require('./modules/activities/reminder.worker');
+const { startBackgroundJobs, stopBackgroundJobs } = require('./jobs');
 
-registerNotificationListeners();
-startReminderSweep({ intervalMs: 15_000 });
+// Outbox dispatcher, reminder sweep and housekeeping. Optional here because they can also run in
+// separate `npm run worker` processes; both are safe together (work is claimed with row locks).
+if (env.RUN_WORKERS_IN_API) {
+  startBackgroundJobs();
+}
 
 const app = createApp();
 
 const server = app.listen(env.PORT, () => {
-  logger.info(`hotel-crm-backend listening on port ${env.PORT} [${env.NODE_ENV}]`);
+  logger.info(
+    `hotel-crm-backend listening on port ${env.PORT} [${env.NODE_ENV}] (background jobs in API: ${env.RUN_WORKERS_IN_API})`
+  );
 });
 
 let shuttingDown = false;
@@ -21,9 +25,9 @@ async function shutdown(signal, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info(`${signal} received, shutting down gracefully`);
-  stopReminderSweep();
   server.close(async () => {
     try {
+      await stopBackgroundJobs();
       await prisma.$disconnect();
       redis.disconnect();
       logger.info('shutdown complete');
