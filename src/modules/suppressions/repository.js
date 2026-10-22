@@ -32,6 +32,14 @@ function search({ propertyId, channel, reason, search, page, pageSize }) {
   ]);
 }
 
+/**
+ * manual -> system reason (unsubscribed / bounced / complaint). Guarded by `reason: 'manual'` so a
+ * system reason, which is the legal record, can never be overwritten, only a manual one replaced.
+ */
+function upgradeManualReason(propertyId, channel, address, reason) {
+  return prisma.suppressionEntry.updateMany({ where: { propertyId, channel, address, reason: 'manual' }, data: { reason } });
+}
+
 function remove(id, propertyId) {
   return prisma.suppressionEntry.deleteMany({ where: { id, propertyId } });
 }
@@ -50,4 +58,4 @@ async function findSuppressedAddresses(propertyId, channel, addresses) {
   return found;
 }
 
-module.exports = { create, findByAddress, findById, search, remove, findSuppressedAddresses };
+module.exports = { create, findByAddress, findById, search, upgradeManualReason, remove, findSuppressedAddresses };

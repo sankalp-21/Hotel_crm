@@ -15,7 +15,7 @@ const { buildUnsubscribeUrl } = require('../unsubscribe/tokens');
 const { waitForSlot } = require('./pacing');
 const { classifySmtpError } = require('../deliveries/classify');
 const { recordHardBounce } = require('../deliveries/service');
-const { resolveSender } = require('../property/senderIdentity');
+const { resolveSender, currentSenderPolicy } = require('../property/senderIdentity');
 const { recordCampaignSent } = require('./events');
 const { withTransaction } = require('../../shared/db/transaction');
 const { logAudit } = require('../audit/service');
@@ -260,7 +260,7 @@ async function deliver({ campaign, property, recipient, contact }) {
           }),
         })
       : null;
-    sender = isEmail ? resolveSender(property, channel.globalFrom?.()) : {};
+    sender = isEmail ? resolveSender(property, channel.globalFrom?.(), currentSenderPolicy()) : {};
   } catch (err) {
     logger.error({ err, campaignId: campaign.id, contactId: contact.id }, 'campaigns:build_failed');
     await repo.updateRecipient(recipient.id, {

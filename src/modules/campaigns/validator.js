@@ -37,7 +37,7 @@ const searchCampaignSchema = z.object({
 });
 
 const recipientsQuerySchema = z.object({
-  status: z.enum(['queued', 'sending', 'sent', 'skipped', 'failed']).optional(),
+  status: z.enum(['queued', 'sending', 'sent', 'skipped', 'failed', 'bounced']).optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(200).default(50),
 });

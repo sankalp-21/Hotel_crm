@@ -282,3 +282,22 @@ test('BUILD FAILURE: an error while composing the email is recorded as "build: .
   assert.match(camp().haltReason, /3 consecutive/);
   assert.strictEqual(statusOf('queued'), 1, 'the rest stay queued for retry-failed');
 });
+
+test('SEND TIME: a stored custom from-address on a domain that is no longer allowed is not used', async () => {
+  const saved = env.emailAllowedFromDomains;
+  try {
+    env.emailAllowedFromDomains = ['platform.test'];
+    seed({ contacts: 2 });
+    db.properties[0].emailFromAddress = 'grand@lapsed.test';
+    await sender.runCampaignSends(opts());
+    assert.strictEqual(sent.length, 2);
+    assert.ok(sent.every((m) => m.from.address === 'noreply@platform.test'), 'falls back to the platform sender');
+
+    seed({ contacts: 1 });
+    db.properties[0].emailFromAddress = 'grand@platform.test';
+    await sender.runCampaignSends(opts());
+    assert.strictEqual(sent[0].from.address, 'grand@platform.test', 'an allowed custom address is still used');
+  } finally {
+    env.emailAllowedFromDomains = saved;
+  }
+});

@@ -4,13 +4,38 @@ const { NotFoundError, ConflictError } = require('../../shared/errors/AppError')
 const { logAudit } = require('../audit/service');
 
 /**
- * Idempotent add used by staff (reason 'manual') and, in later steps, by the unsubscribe link and
- * bounce handling. Returns { entry, created }. Never downgrades an existing entry's reason.
+ * Idempotent add used by staff (reason 'manual'), by the unsubscribe link and by bounce handling.
+ * Returns { entry, created }.
+ *
+ * Reasons only move one way. A system reason (unsubscribed / bounced / complaint) is a legal and
+ * deliverability record and is never replaced. But a MANUAL entry is upgraded when the address later
+ * unsubscribes, bounces or complains: staff may delete manual entries, and deleting one must not
+ * erase the fact that the person opted out.
  */
 async function suppressAddress({ propertyId, channel, address, reason = 'manual', createdBy = null }) {
   const normalized = normalizeAddress(channel, address);
+
+  const settle = async (existing) => {
+    if (existing.reason !== 'manual' || reason === 'manual') return { entry: existing, created: false };
+
+    const { count } = await repository.upgradeManualReason(propertyId, channel, normalized, reason);
+    if (count !== 1) {
+      // Someone else upgraded it first (or it was just removed): use whatever is there now.
+      const latest = await repository.findByAddress(propertyId, channel, normalized);
+      return { entry: latest ?? existing, created: false };
+    }
+    await logAudit({
+      propertyId,
+      action: 'suppression.reason_upgraded',
+      entityType: 'SuppressionEntry',
+      entityId: existing.id,
+      metadata: { channel, from: 'manual', to: reason }, // no address: it is PII
+    });
+    return { entry: { ...existing, reason }, created: false };
+  };
+
   const existing = await repository.findByAddress(propertyId, channel, normalized);
-  if (existing) return { entry: existing, created: false };
+  if (existing) return settle(existing);
 
   try {
     const entry = await repository.create({
@@ -25,7 +50,7 @@ async function suppressAddress({ propertyId, channel, address, reason = 'manual'
     // Lost a race with a concurrent insert of the same address: the unique index did its job.
     if (err.code === 'P2002') {
       const entry = await repository.findByAddress(propertyId, channel, normalized);
-      if (entry) return { entry, created: false };
+      if (entry) return settle(entry);
     }
     throw err;
   }

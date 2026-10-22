@@ -58,6 +58,10 @@ Campaigns only reach contacts who have opted in. Everyone else is recorded on th
   consent for a contact who unsubscribed.
 - `/suppressions` manages the per-property list (`suppressions:read` / `suppressions:manage`).
   Staff can add and remove **manual** entries; unsubscribe/bounce/complaint entries are permanent.
+  If an address on the list as `manual` later unsubscribes, bounces or complains, its entry is upgraded
+  to that reason (audited), so deleting the manual entry can never erase an opt-out.
+- A bounce belongs to an address: changing a contact's email clears `emailBounced` for the new address,
+  while the old address stays suppressed.
 
 ### Sending campaigns (asynchronous)
 
@@ -124,6 +128,10 @@ Every campaign email gets a per-recipient signed link, a footer (hotel name + po
   `POST` performs the opt-out; it is also the one-click endpoint mail clients call.
 - Opting out sets `unsubscribedAt`, clears consent and adds the address to the suppression list.
   It is idempotent; invalid, forged or expired links return 400 and change nothing.
+- Rate limits: links with a valid signed token are limited per contact (not per IP), so mail providers
+  sending one-click opt-outs from shared IPs are never starved. Forged or missing tokens stay under a
+  tight per-IP limit. Provider delivery webhooks are exempt from the global per-IP limit (they have their
+  own limiter and a signature check).
 - Email campaigns are refused (422) until the property has a postal address (`PATCH /properties/:id`).
 - Production requires `PUBLIC_BASE_URL` (https) and `UNSUBSCRIBE_SECRET` (32+ chars, different from the
   JWT secrets). Rotating the secret invalidates links already sent, so rotate rarely.
@@ -135,6 +143,25 @@ Every campaign email gets a per-recipient signed link, a footer (hotel name + po
 - `GET /reports/forecast?from=&to=` — open pipeline, won/lost, win rate
 
 Requires `reports:read`.
+
+### Logging
+
+Request logs are an allow-list (method, path, request id, client address, a few harmless headers).
+`Authorization`/`Cookie` headers are never logged, and query strings under `/public/` (webhook `sig`,
+unsubscribe `token`) are replaced with `?[redacted]`. Treat the delivery-webhook URL as a secret anyway.
+
+### Upgrading from a pre-async-sending database
+
+Migration `phase3_close_legacy_sending` marks campaigns left in `sending` by the old synchronous sender
+(no `startedAt`) as `failed` (`haltReason = legacy_interrupted_before_async_sending`). Without it the
+workers would pick them up and email them. Re-send deliberately if you want to (new campaign, or
+`POST /campaigns/:id/retry-failed`).
+
+### Sender address policy
+
+A hotel's custom from-address must be on `EMAIL_ALLOWED_FROM_DOMAINS` when saved **and** at send time. If
+the list later shrinks, the stored address is ignored (the platform sender is used) and
+`GET /properties/:id/sender` reports `customFromAddressBlocked: true`.
 
 ## Production deploy checklist
 

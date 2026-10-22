@@ -44,6 +44,17 @@ const fakePrisma = {
           s.channel === where.channel &&
           where.address.in.includes(s.address)
       ),
+    updateMany: async ({ where, data }) => {
+      const rows = state.suppressions.filter(
+        (s) =>
+          s.propertyId === where.propertyId &&
+          s.channel === where.channel &&
+          s.address === where.address &&
+          s.reason === where.reason
+      );
+      rows.forEach((r) => Object.assign(r, data));
+      return { count: rows.length };
+    },
     deleteMany: async ({ where }) => {
       state.suppressions = state.suppressions.filter(
         (s) => !(s.id === where.id && s.propertyId === where.propertyId)
@@ -141,6 +152,56 @@ test('only manual entries can be removed; system entries are 409', async () => {
   assert.ok(!state.suppressions.find((s) => s.id === manual.id));
 });
 
+test('a MANUAL suppression is upgraded when the person later unsubscribes, so deleting it cannot erase the opt-out', async () => {
+  const add = (reason) => suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'Ann@Hotel.com', reason });
+  const manual = await add('manual');
+  const later = await add('unsubscribed');
+
+  assert.strictEqual(later.created, false);
+  assert.strictEqual(later.entry.id, manual.entry.id, 'same row, upgraded in place');
+  assert.strictEqual(later.entry.reason, 'unsubscribed');
+  assert.strictEqual(state.suppressions.length, 1);
+  assert.strictEqual(state.suppressions[0].reason, 'unsubscribed');
+
+  // The whole point: staff can no longer remove it.
+  await assert.rejects(() => suppressions.removeSuppression(manual.entry.id, PROP, { id: 'u1' }), { statusCode: 409 });
+  assert.strictEqual(state.suppressions.length, 1);
+
+  const audit = state.audits.find((a) => a.action === 'suppression.reason_upgraded');
+  assert.ok(audit, 'the upgrade is audited');
+  assert.deepStrictEqual(audit.metadata, { channel: 'email', from: 'manual', to: 'unsubscribed' });
+  assert.ok(!JSON.stringify(audit).toLowerCase().includes('ann@hotel.com'), 'no PII in the audit');
+});
+
+test('bounce and complaint also upgrade a manual entry', async () => {
+  for (const reason of ['bounced', 'complaint']) {
+    state.suppressions.length = 0;
+    await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com' });
+    const r = await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com', reason });
+    assert.strictEqual(r.entry.reason, reason);
+    assert.strictEqual(state.suppressions[0].reason, reason);
+  }
+});
+
+test('a system reason is never overwritten or downgraded', async () => {
+  const first = await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com', reason: 'unsubscribed' });
+  const manualAgain = await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com' });
+  const bounce = await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com', reason: 'bounced' });
+
+  assert.strictEqual(manualAgain.entry.reason, 'unsubscribed', 'manual add does not downgrade');
+  assert.strictEqual(bounce.entry.reason, 'unsubscribed', 'the first system reason stays the record');
+  assert.strictEqual(state.suppressions[0].reason, 'unsubscribed');
+  assert.strictEqual(first.entry.id, state.suppressions[0].id);
+  assert.ok(!state.audits.some((a) => a.action === 'suppression.reason_upgraded'));
+});
+
+test('upgrade is scoped to the property and channel', async () => {
+  await suppressions.suppressAddress({ propertyId: 'other', channel: 'email', address: 'x@y.com' });
+  await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'x@y.com', reason: 'unsubscribed' });
+  const other = state.suppressions.find((s) => s.propertyId === 'other');
+  assert.strictEqual(other.reason, 'manual', "another hotel's entry is untouched");
+});
+
 test('removing an entry from another property is 404', async () => {
   const { entry } = await suppressions.suppressAddress({ propertyId: 'other', channel: 'email', address: 'a@b.com' });
   await assert.rejects(() => suppressions.removeSuppression(entry.id, PROP, { id: 'u1' }), { statusCode: 404 });
@@ -204,4 +265,30 @@ test('revoking consent is audited', async () => {
   state.contacts.set('c1', { id: 'c1', propertyId: PROP, marketingConsent: true, unsubscribedAt: null });
   await contactsService.updateContact('c1', PROP, { marketingConsent: false }, { id: 'u1' });
   assert.ok(state.audits.some((a) => a.action === 'contact.consent_revoked'));
+});
+
+// ---------- bounce flag belongs to the address, not the person ----------
+test('changing a bounced contact\'s email gives the new address a clean slate; the old one stays suppressed', async () => {
+  state.contacts.set('c1', { id: 'c1', propertyId: PROP, email: 'old@x.com', emailBounced: true, marketingConsent: false, unsubscribedAt: null });
+  await suppressions.suppressAddress({ propertyId: PROP, channel: 'email', address: 'old@x.com', reason: 'bounced' });
+
+  const c = await contactsService.updateContact('c1', PROP, { email: 'new@x.com' }, { id: 'u1' });
+
+  assert.strictEqual(c.emailBounced, false, 'the new address is not treated as bounced');
+  const [old] = await classifyContacts(PROP, 'email', [{ ...base, email: 'old@x.com' }]);
+  assert.strictEqual(old.skipReason, SKIP_REASONS.SUPPRESSED, 'the bounced address is still never mailed');
+});
+
+test('bounce flag is kept when the email does not really change, or when other fields change', async () => {
+  state.contacts.set('c1', { id: 'c1', propertyId: PROP, email: 'old@x.com', emailBounced: true });
+  const same = await contactsService.updateContact('c1', PROP, { email: '  OLD@x.com ' }, { id: 'u1' });
+  assert.strictEqual(same.emailBounced, true, 'case/whitespace-only change is the same address');
+  const other = await contactsService.updateContact('c1', PROP, { fullName: 'B' }, { id: 'u1' });
+  assert.strictEqual(other.emailBounced, true);
+});
+
+test('a contact that never bounced is not touched by an email change', async () => {
+  state.contacts.set('c1', { id: 'c1', propertyId: PROP, email: 'a@x.com', emailBounced: false });
+  const c = await contactsService.updateContact('c1', PROP, { email: 'b@x.com' }, { id: 'u1' });
+  assert.strictEqual(c.emailBounced, false);
 });

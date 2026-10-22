@@ -310,3 +310,24 @@ test('webhook: malformed payloads are 422 (the API\'s validation status); a sign
     assert.strictEqual(gone.status, 404);
   });
 });
+
+// ---------- Phase 3 hardening: sender policy re-applied at send time ----------
+const { isFromAddressAllowed } = require('../src/modules/property/senderIdentity');
+
+test('resolveSender with a policy ignores a stored custom address whose domain is no longer allowed', () => {
+  const g = { name: 'Platform', address: 'noreply@platform.test' };
+  const property = { name: 'Grand', emailFromAddress: 'grand@gone.test', emailReplyTo: 'desk@grand.test' };
+  const out = resolveSender(property, g, { allowedDomains: ['platform.test'], nodeEnv: 'production' });
+  assert.deepStrictEqual(out, { from: { name: 'Grand', address: 'noreply@platform.test' }, replyTo: 'desk@grand.test' });
+
+  const ok = resolveSender({ ...property, emailFromAddress: 'grand@platform.test' }, g, { allowedDomains: ['platform.test'], nodeEnv: 'production' });
+  assert.strictEqual(ok.from.address, 'grand@platform.test');
+});
+
+test('isFromAddressAllowed: allow-list wins; empty list means "dev only"', () => {
+  const p = (allowedDomains, nodeEnv) => ({ allowedDomains, nodeEnv });
+  assert.strictEqual(isFromAddressAllowed('a@Platform.test', p(['platform.test'], 'production')), true);
+  assert.strictEqual(isFromAddressAllowed('a@other.test', p(['platform.test'], 'development')), false);
+  assert.strictEqual(isFromAddressAllowed('a@other.test', p([], 'production')), false);
+  assert.strictEqual(isFromAddressAllowed('a@other.test', p([], 'development')), true);
+});

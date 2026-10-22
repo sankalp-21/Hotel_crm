@@ -80,6 +80,13 @@ async function updateContact(id, propertyId, data, actingUser) {
     update.consentUpdatedAt = new Date();
   }
 
+  // A bounce belongs to an ADDRESS, not to the person. When the email changes, the new address starts
+  // clean (the old one stays on the suppression list, so it is still never mailed).
+  const norm = (e) => String(e ?? '').trim().toLowerCase();
+  if (rest.email !== undefined && current.emailBounced && norm(rest.email) !== norm(current.email)) {
+    update.emailBounced = false;
+  }
+
   const contact = await contactsRepository.update(id, propertyId, update);
   await logAudit({
     propertyId,

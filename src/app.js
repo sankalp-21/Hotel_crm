@@ -1,11 +1,10 @@
-const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const pinoHttp = require('pino-http');
 
 const env = require('./config/env');
 const logger = require('./config/logger');
+const { createHttpLogger } = require('./config/httpLogger');
 const prisma = require('./infrastructure/db/prisma');
 const redis = require('./infrastructure/redis/redis');
 const { errorHandler, notFoundHandler } = require('./shared/errors/errorHandler');
@@ -56,17 +55,7 @@ function createApp() {
   app.use(cors(corsOptions));
 
   app.use(express.json({ limit: '1mb' }));
-  app.use(
-    pinoHttp({
-      logger,
-      genReqId(req, res) {
-        const existing = req.headers['x-request-id'];
-        const id = typeof existing === 'string' && existing ? existing : crypto.randomUUID();
-        res.setHeader('X-Request-Id', id);
-        return id;
-      },
-    })
-  );
+  app.use(createHttpLogger(logger));
 
   app.use(globalRateLimiter());
 

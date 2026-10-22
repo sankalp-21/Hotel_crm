@@ -2,21 +2,16 @@ const env = require('../../config/env');
 const propertyRepository = require('./repository');
 const { NotFoundError, ValidationError } = require('../../shared/errors/AppError');
 const { logAudit } = require('../audit/service');
-const { resolveSender } = require('./senderIdentity');
+const { resolveSender, isFromAddressAllowed, currentSenderPolicy, domainOf } = require('./senderIdentity');
 const { deliveryWebhookUrl } = require('../deliveries/signature');
 const channel = require('../notifications/channel');
-
-function domainOf(address) {
-  return String(address).split('@')[1]?.toLowerCase() ?? '';
-}
 
 // The shared SMTP account can only vouch for domains the platform controls (SPF/DKIM). Letting a hotel
 // type any from-address would let it impersonate someone else's domain through our server.
 function assertFromAddressAllowed(address) {
   const allowed = env.emailAllowedFromDomains;
   const domain = domainOf(address);
-  const permitted = allowed.length > 0 ? allowed.includes(domain) : env.NODE_ENV !== 'production';
-  if (!permitted) {
+  if (!isFromAddressAllowed(address, currentSenderPolicy())) {
     throw new ValidationError(
       allowed.length > 0
         ? `The domain "${domain}" is not verified for sending. Allowed domains: ${allowed.join(', ')}`
@@ -28,11 +23,16 @@ function assertFromAddressAllowed(address) {
 async function getSenderSettings(propertyId) {
   const property = await propertyRepository.findById(propertyId);
   if (!property) throw new NotFoundError('Property');
-  const { from, replyTo } = resolveSender(property, channel.globalFrom());
+  const { from, replyTo } = resolveSender(property, channel.globalFrom(), currentSenderPolicy());
   return {
     emailFromName: property.emailFromName,
     emailFromAddress: property.emailFromAddress,
     emailReplyTo: property.emailReplyTo,
+    // True when a saved custom address is no longer permitted (allow-list changed): it is being ignored
+    // and the platform's sender is used instead until the address is changed or the domain re-allowed.
+    customFromAddressBlocked: Boolean(
+      property.emailFromAddress && !isFromAddressAllowed(property.emailFromAddress, currentSenderPolicy())
+    ),
     // What recipients will actually see, after fallbacks:
     effective: { fromName: from?.name ?? null, fromAddress: from?.address ?? null, replyTo: replyTo ?? null },
     allowedFromDomains: env.emailAllowedFromDomains,
