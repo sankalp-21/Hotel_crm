@@ -1,4 +1,5 @@
 const { escapeHtml } = require('../unsubscribe/pages');
+const { renderTemplate } = require('./template');
 
 /**
  * Build the final email for one recipient: personalised body + compliance footer
@@ -23,4 +24,17 @@ function buildMarketingEmail({ renderedBody, property, unsubscribeUrl }) {
   return { text, html, headers };
 }
 
-module.exports = { buildMarketingEmail };
+/**
+ * Render a campaign for ONE contact: subject, plain body and (for email) the full message with footer.
+ * The single path used by real sends, preview and test-send, so they cannot drift apart.
+ * `unsubscribeUrl` is required for email; previews pass an inert link (see buildInertUnsubscribeUrl).
+ */
+function renderCampaignMessage({ campaign, contact, property, unsubscribeUrl }) {
+  const isEmail = campaign.channel === 'email';
+  const subject = isEmail ? renderTemplate(campaign.subject, contact) : null;
+  const body = renderTemplate(campaign.body, contact);
+  const email = isEmail ? buildMarketingEmail({ renderedBody: body, property, unsubscribeUrl }) : null;
+  return { subject, body, email };
+}
+
+module.exports = { buildMarketingEmail, renderCampaignMessage };

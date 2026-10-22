@@ -30,7 +30,7 @@ Without it, an older database answers `403 Missing permission "..."` on the new 
 | `/deals` | Deals + transitions |
 | `/activities` | Activities + reminders |
 | `/segments` | Saved contact filters |
-| `/campaigns` | Bulk email/SMS (consent-gated) |
+| `/campaigns` | Bulk email/SMS (consent-gated), preview, test send |
 | `/public/unsubscribe` | Public signed-link unsubscribe (no auth) |
 | `/suppressions` | Per-property do-not-contact list (email/SMS) |
 | `/reports` | Pipeline funnel, forecast, dashboard |
@@ -118,6 +118,38 @@ with `{received, applied, ignored}`. Events are idempotent, so provider retries 
 from-address must be on a domain listed in `EMAIL_ALLOWED_FROM_DOMAINS` (production refuses custom
 addresses while that list is empty), so a hotel can't impersonate another domain through the shared
 SMTP account. Per-hotel SMTP credentials are not implemented yet.
+
+### Campaign content: placeholders, preview, test send
+
+**Placeholders.** `subject` and `body` may use `{{fullName}}`, `{{email}}` and `{{phone}}`. Spaces inside
+the braces are allowed (`{{ fullName }}`). Anything else between double braces is rejected with a 422
+that lists the unknown names, both when a campaign is created and when it is updated. Names are
+case-sensitive. A missing contact value renders as empty text. Values are inserted in one pass, so a
+contact whose name looks like `{{email}}` is never expanded twice, and they are HTML-escaped in the
+HTML part. One parser (`src/modules/campaigns/template.js`) is used for validation, sending, preview and
+test send, so they cannot disagree. Drafts saved before this check existed are refused at send time
+(422) until the unknown placeholder is fixed; they are never emailed with literal `{{...}}` text.
+
+**Preview** (`GET /campaigns/:id/preview?contactId=`, permission `campaigns:read`). Renders subject, plain
+text and HTML for one contact and sends nothing. Without `contactId` a fixed sample contact is used
+("Alex Sample"). With `contactId` the contact must belong to the property (404 otherwise) and the caller
+also needs `contacts:read`. The response includes the resolved sender (`from`, `replyTo`) and
+`warnings` (`unknownPlaceholders`, `missingPostalAddress`). The unsubscribe link in a preview is inert (it
+carries no valid token), so a preview can be shared safely. The `html` field is untrusted markup built from
+campaign text: display it in a sandboxed iframe, not directly in your app's DOM.
+
+**Test send** (`POST /campaigns/:id/test-send` with `{ "to": "address" }`, permission `campaigns:send`).
+Sends one copy, rendered for the sample contact, through the normal sender identity and footer.
+
+- `to` must be the email of an **active user who holds a role at this property**; anything else is a 422
+  with one fixed message (no way to probe which addresses exist). This is what stops it being used as an
+  open relay.
+- The subject is prefixed `[TEST] `. The unsubscribe link is inert and no `List-Unsubscribe` headers are added.
+- It changes nothing about the campaign: no status, counters, recipient rows, notification record or
+  outbox event. Works in any campaign status. Email campaigns only.
+- Audit entry `campaign.test_sent` records the user and campaign id, not the address.
+- Limited to `CAMPAIGN_TEST_SEND_MAX_PER_HOUR` (default 10) per user; rejected attempts count too.
+- If the mail transport fails the response is 502 `EMAIL_SEND_FAILED` with a generic message; details go to the log.
 
 ### Unsubscribe
 

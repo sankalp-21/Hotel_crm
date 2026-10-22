@@ -1,4 +1,13 @@
 const { z } = require('zod');
+const { unknownPlaceholderMessage } = require('./template');
+
+/** Reject unknown {{placeholders}} in subject and body, naming them (one source of truth: template.js). */
+function checkPlaceholders(data, ctx) {
+  for (const field of ['subject', 'body']) {
+    const message = unknownPlaceholderMessage(field, data[field]);
+    if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [field] });
+  }
+}
 
 const createCampaignSchema = z
   .object({
@@ -13,6 +22,7 @@ const createCampaignSchema = z
     if (data.channel === 'email' && !data.subject) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'subject is required for email campaigns', path: ['subject'] });
     }
+    checkPlaceholders(data, ctx);
   });
 
 const updateCampaignSchema = z
@@ -27,6 +37,7 @@ const updateCampaignSchema = z
     if (data.channel === 'email' && data.subject === null) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'subject is required for email campaigns', path: ['subject'] });
     }
+    checkPlaceholders(data, ctx);
   });
 
 const searchCampaignSchema = z.object({
@@ -42,7 +53,18 @@ const recipientsQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(200).default(50),
 });
 
+const previewQuerySchema = z.object({
+  // Omit to preview with a fixed sample contact; a real contact must belong to this property.
+  contactId: z.string().uuid().optional(),
+});
+
+const testSendSchema = z.object({
+  to: z.string().trim().max(254).email(),
+});
+
 module.exports = {
+  previewQuerySchema,
+  testSendSchema,
   recipientsQuerySchema,
   createCampaignSchema,
   updateCampaignSchema,

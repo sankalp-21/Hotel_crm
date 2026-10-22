@@ -32,6 +32,11 @@ function match(row, where = {}) {
       const camp = db.campaigns.find((c) => c.id === row.campaignId);
       return Boolean(camp) && match(camp, cond);
     }
+    if (k === 'user') {
+      // relation filter on a user-property role: join to its user (db.users, optional for most tests)
+      const user = (db.users || []).find((u) => u.id === row.userId);
+      return Boolean(user) && match(user, cond);
+    }
     return matchValue(row[k], cond);
   });
 }
@@ -105,6 +110,7 @@ const fakePrisma = {
   notification: table('notifications'),
   outboxEvent: table('outbox'),
   auditLog: table('audits'),
+  userPropertyRole: table('userRoles'),
   $transaction: async (fn) => fn(fakePrisma),
 };
 

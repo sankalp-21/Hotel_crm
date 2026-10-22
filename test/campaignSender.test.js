@@ -301,3 +301,19 @@ test('SEND TIME: a stored custom from-address on a domain that is no longer allo
     env.emailAllowedFromDomains = saved;
   }
 });
+
+// ───────────── placeholders: real sends and preview render identically (Phase 3.5) ─────────────
+test('PLACEHOLDERS: real sends accept {{ spaced }} names and render exactly what the preview shows', async () => {
+  seed({ contacts: 1, campaignOver: { subject: 'Hi {{ fullName }}', body: 'Hello {{ fullName }} <{{email}}> {{ phone }}' } });
+  await sender.runCampaignSends(opts());
+
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].subject, 'Hi N0');
+  assert.match(sent[0].body, /^Hello N0 <c00000@x\.com> \n/);
+
+  const preview = await service.previewCampaign('k1', P, { contactId: 'c00000' });
+  const unToken = (t) => t.replace(/token=[^\s"<&]+/g, 'token=X'); // the only intended difference: the link
+  assert.strictEqual(preview.subject, sent[0].subject);
+  assert.strictEqual(unToken(preview.text), unToken(sent[0].body));
+  assert.strictEqual(unToken(preview.html), unToken(sent[0].html));
+});

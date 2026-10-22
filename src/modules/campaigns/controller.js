@@ -45,4 +45,14 @@ async function recipients(req, res) {
   res.json(result);
 }
 
-module.exports = { create, getOne, search, update, send, cancel, retryFailed, recipients };
+async function preview(req, res) {
+  const result = await campaignsService.previewCampaign(req.params.id, req.propertyId, req.query);
+  res.json(result);
+}
+
+async function testSend(req, res) {
+  const result = await campaignsService.testSendCampaign(req.params.id, req.propertyId, req.body, req.user);
+  res.json(result);
+}
+
+module.exports = { create, getOne, search, update, send, cancel, retryFailed, recipients, preview, testSend };

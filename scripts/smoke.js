@@ -245,6 +245,34 @@ async function main() {
   check('create campaign 201 (draft)', r.status === 201 && r.json?.status === 'draft', r);
   const campaignId = r.json?.id;
 
+  section('Campaign content: placeholders, preview, test send (Phase 3.5)');
+  r = await call('POST', '/campaigns', {
+    token: t,
+    body: { propertyId: PROPERTY_ID, segmentId, name: `Bad placeholder ${run}`, channel: 'email', subject: 'Hi {{nickname}}', body: 'Dear {{ fullName }}, {{city}}' },
+  });
+  check('create with unknown placeholders -> 422 naming them', r.status === 422 && JSON.stringify(r.json).includes('{{nickname}}') && JSON.stringify(r.json).includes('{{city}}'), r.json);
+  r = await call('PATCH', `/campaigns/${campaignId}`, { token: t, body: { body: 'Hello {{guestName}}' } });
+  check('update with an unknown placeholder -> 422', r.status === 422 && JSON.stringify(r.json).includes('{{guestName}}'), r.json);
+  r = await call('PATCH', `/campaigns/${campaignId}`, { token: t, body: { subject: 'Hello {{ fullName }}' } });
+  check('update with a spaced placeholder is accepted', r.status === 200, r);
+
+  r = await call('GET', `/campaigns/${campaignId}/preview`, { token: t });
+  check('preview with the sample contact: rendered, nothing sent', r.status === 200 && r.json?.contact?.sample === true && r.json?.subject === 'Hello Alex Sample' && /Alex Sample/.test(r.json?.text || ''), r.json);
+  check('preview unsubscribe link carries no working token', /token=preview-not-a-real-token/.test(r.json?.text || ''), r.json?.text);
+  r = await call('GET', `/campaigns/${campaignId}/preview?contactId=${contactId}`, { token: t });
+  check('preview as a real contact renders that contact', r.status === 200 && r.json?.contact?.id === contactId && r.json?.subject === `Hello Smoke Tester ${run}`, r.json);
+  r = await call('GET', `/campaigns/${campaignId}/preview?contactId=00000000-0000-4000-8000-000000000999`, { token: t });
+  check('preview for an unknown contact -> 404', r.status === 404, r);
+
+  r = await call('POST', `/campaigns/${campaignId}/test-send`, { token: t, body: { to: EMAIL } });
+  check('test-send to a staff member -> 200 with [TEST] subject (check Mailpit)', r.status === 200 && r.json?.sent === true && /^\[TEST\] /.test(r.json?.subject || ''), r.json);
+  r = await call('POST', `/campaigns/${campaignId}/test-send`, { token: t, body: { to: `stranger-${run}@example.com` } });
+  check('test-send to a non-staff address -> 422 (not an open relay)', r.status === 422, r);
+  r = await call('GET', `/campaigns/${campaignId}`, { token: t });
+  check('campaign untouched by preview and test-send: still draft, no recipients, no counts', r.status === 200 && r.json?.status === 'draft' && r.json?.totalRecipients === 0 && r.json?.sentCount === 0, r.json && { status: r.json.status, total: r.json.totalRecipients, sent: r.json.sentCount });
+  r = await call('GET', `/campaigns/${campaignId}/recipients`, { token: t });
+  check('no recipient rows were created', r.status === 200 && r.json?.total === 0, r.json);
+
   r = await call('POST', `/campaigns/${campaignId}/send`, { token: t });
   check('send without Idempotency-Key -> 422', r.status === 422, r);
   const idemKey = `smoke-send-${run}`;
@@ -355,6 +383,7 @@ async function main() {
     ['segment', `/segments/${segmentId}`],
     ['segment preview', `/segments/${segmentId}/preview`],
     ['campaign', `/campaigns/${campaignId}`],
+    ['campaign preview', `/campaigns/${campaignId}/preview`],
     ['contact timeline', `/contacts/${contactId}/timeline`],
   ];
   for (const [label, path] of crossReads) {
@@ -380,6 +409,10 @@ async function main() {
   }
   r = await asB('POST', `/campaigns/${campaignId}/send`, undefined, idem('x-send'));
   check("B sending A's campaign -> 404", r.status === 404, r);
+  r = await asB('POST', `/campaigns/${campaignId}/test-send`, { to: `b-${run}@example.com` });
+  check("B test-sending A's campaign -> 404", r.status === 404, r);
+  r = await asB('GET', `/campaigns/${campaignId}/preview?contactId=${contactId}`);
+  check("B previewing A's campaign with A's contact -> 404", r.status === 404, r);
 
   r = await call('GET', `/contacts/${contactId}`, { token: t });
   check("A's contact unchanged after B's attempts", r.status === 200 && r.json?.fullName === `Smoke Tester ${run}`, r.json?.fullName);

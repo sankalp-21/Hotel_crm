@@ -100,6 +100,25 @@ function unsubscribeTokenRateLimiter({ store, max = 30 } = {}) {
   });
 }
 
+/**
+ * Test sends email real addresses, so they are capped per USER (not per IP): a handful per hour is
+ * plenty for proofreading a campaign. Every attempt counts, including rejected recipients, which also
+ * limits probing for which addresses belong to staff. Must run after `authenticate`.
+ */
+function testSendRateLimiter({ store, max } = {}) {
+  return rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: max ?? env.CAMPAIGN_TEST_SEND_MAX_PER_HOUR,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `test-send:${req.user.id}`,
+    store: store ?? createRedisStore('rl:test-send:'),
+    message: {
+      error: { code: 'RATE_LIMITED', message: 'Too many test emails. Please try again later.' },
+    },
+  });
+}
+
 /** Provider webhooks can burst (a big campaign's bounces arrive together), so this is generous. */
 function webhookRateLimiter() {
   return rateLimit({
@@ -119,5 +138,6 @@ module.exports = {
   authRateLimiter,
   publicRateLimiter,
   unsubscribeTokenRateLimiter,
+  testSendRateLimiter,
   webhookRateLimiter,
 };

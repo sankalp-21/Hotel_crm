@@ -46,4 +46,13 @@ function buildUnsubscribeUrl(ids) {
   return `${env.publicBaseUrl}/public/unsubscribe?token=${signUnsubscribeToken(ids)}`;
 }
 
-module.exports = { signUnsubscribeToken, verifyUnsubscribeToken, buildUnsubscribeUrl };
+/**
+ * A link that LOOKS like the real one but carries no valid token: it can never unsubscribe anyone
+ * (the endpoint answers "link not valid"). Used in previews and test emails, so nothing shareable
+ * ever contains a working opt-out token for a real contact.
+ */
+function buildInertUnsubscribeUrl() {
+  return `${env.publicBaseUrl}/public/unsubscribe?token=preview-not-a-real-token`;
+}
+
+module.exports = { signUnsubscribeToken, verifyUnsubscribeToken, buildUnsubscribeUrl, buildInertUnsubscribeUrl };

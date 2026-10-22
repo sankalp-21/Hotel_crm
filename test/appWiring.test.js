@@ -55,6 +55,8 @@ const PROTECTED = [
   ['POST', '/auth/change-password'],
   ['GET', '/auth/roles'],
   ['POST', '/properties'],
+  ['GET', `/campaigns/${ID}/preview`],
+  ['POST', `/campaigns/${ID}/test-send`],
 ];
 
 test('new endpoints are mounted and reject unauthenticated callers with 401 (not 404/500)', async () => {

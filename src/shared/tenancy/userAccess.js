@@ -21,4 +21,17 @@ async function assertUserHasPropertyAccess(userId, propertyId, field = 'assigned
   }
 }
 
-module.exports = { assertUserHasPropertyAccess };
+/**
+ * True when `email` belongs to an active user holding a role at `propertyId` (case-insensitive).
+ * Boolean on purpose: callers must answer "no such user" and "user elsewhere" identically.
+ */
+async function isActiveMemberEmail(email, propertyId) {
+  if (!email || !propertyId) return false;
+  const access = await prisma.userPropertyRole.findFirst({
+    where: { propertyId, user: { isActive: true, email: { equals: email, mode: 'insensitive' } } },
+    select: { id: true },
+  });
+  return Boolean(access);
+}
+
+module.exports = { assertUserHasPropertyAccess, isActiveMemberEmail };

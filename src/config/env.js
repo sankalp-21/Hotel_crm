@@ -85,6 +85,8 @@ const envSchema = z
     CAMPAIGN_MAX_CONSECUTIVE_FAILURES: z.coerce.number().int().min(1).default(25),
     /** A sending campaign with no progress for this long is logged as stalled. */
     CAMPAIGN_STALL_MINUTES: z.coerce.number().int().min(1).default(15),
+    /** POST /campaigns/:id/test-send: most test emails one user may send per hour. */
+    CAMPAIGN_TEST_SEND_MAX_PER_HOUR: z.coerce.number().int().min(1).default(10),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;

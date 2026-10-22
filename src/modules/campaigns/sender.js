@@ -9,8 +9,7 @@ const propertyRepository = require('../property/repository');
 const notificationsRepository = require('../notifications/repository');
 const channel = require('../notifications/channel');
 const { classifyContacts } = require('./eligibility');
-const { buildMarketingEmail } = require('./message');
-const { renderTemplate } = require('./template');
+const { renderCampaignMessage } = require('./message');
 const { buildUnsubscribeUrl } = require('../unsubscribe/tokens');
 const { waitForSlot } = require('./pacing');
 const { classifySmtpError } = require('../deliveries/classify');
@@ -247,19 +246,14 @@ async function deliver({ campaign, property, recipient, contact }) {
   let email;
   let sender;
   try {
-    subject = isEmail ? renderTemplate(campaign.subject, contact) : null;
-    body = renderTemplate(campaign.body, contact);
-    email = isEmail
-      ? buildMarketingEmail({
-          renderedBody: body,
-          property,
-          unsubscribeUrl: buildUnsubscribeUrl({
-            contactId: contact.id,
-            propertyId: campaign.propertyId,
-            campaignId: campaign.id,
-          }),
-        })
-      : null;
+    ({ subject, body, email } = renderCampaignMessage({
+      campaign,
+      contact,
+      property,
+      unsubscribeUrl: isEmail
+        ? buildUnsubscribeUrl({ contactId: contact.id, propertyId: campaign.propertyId, campaignId: campaign.id })
+        : null,
+    }));
     sender = isEmail ? resolveSender(property, channel.globalFrom?.(), currentSenderPolicy()) : {};
   } catch (err) {
     logger.error({ err, campaignId: campaign.id, contactId: contact.id }, 'campaigns:build_failed');
